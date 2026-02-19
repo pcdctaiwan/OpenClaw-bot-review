@@ -38,6 +38,126 @@ interface ConfigData {
   groupChats?: GroupChat[];
 }
 
+interface DayStat {
+  date: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  messageCount: number;
+  avgResponseMs: number;
+}
+
+interface AllStats {
+  daily: DayStat[];
+  weekly: DayStat[];
+  monthly: DayStat[];
+}
+
+type TimeRange = "daily" | "weekly" | "monthly";
+const RANGE_LABELS: Record<TimeRange, string> = { daily: "按天", weekly: "按周", monthly: "按月" };
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
+function formatMs(ms: number): string {
+  if (!ms) return "-";
+  if (ms < 1000) return ms + "ms";
+  return (ms / 1000).toFixed(1) + "s";
+}
+
+// 趋势折线图
+function TrendChart({ data, lines, height = 180 }: { data: DayStat[]; lines: { key: keyof DayStat; color: string; label: string }[]; height?: number }) {
+  if (data.length === 0) return <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">暂无数据</div>;
+
+  const pad = { top: 16, right: 16, bottom: 50, left: 56 };
+  const width = Math.max(500, data.length * 56 + pad.left + pad.right);
+  const chartW = width - pad.left - pad.right;
+  const chartH = height - pad.top - pad.bottom;
+
+  let maxVal = 0;
+  for (const d of data) for (const l of lines) { const v = d[l.key] as number; if (v > maxVal) maxVal = v; }
+  if (maxVal === 0) maxVal = 1;
+
+  const ticks = Array.from({ length: 5 }, (_, i) => Math.round((maxVal / 4) * i));
+
+  function toX(i: number) { return pad.left + (i / (data.length - 1 || 1)) * chartW; }
+  function toY(v: number) { return pad.top + chartH - (v / maxVal) * chartH; }
+
+  return (
+    <div className="overflow-x-auto">
+      <svg width={width} height={height} className="text-[var(--text-muted)]">
+        {ticks.map((tick, i) => (
+          <g key={i}>
+            <line x1={pad.left} y1={toY(tick)} x2={width - pad.right} y2={toY(tick)} stroke="currentColor" opacity={0.12} />
+            <text x={pad.left - 8} y={toY(tick) + 4} textAnchor="end" fontSize={10} fill="currentColor">{formatTokens(tick)}</text>
+          </g>
+        ))}
+        {lines.map((l) => {
+          const points = data.map((d, i) => `${toX(i)},${toY(d[l.key] as number)}`).join(" ");
+          return <polyline key={l.key} points={points} fill="none" stroke={l.color} strokeWidth={2} opacity={0.85} />;
+        })}
+        {lines.map((l) => data.map((d, i) => (
+          <circle key={`${l.key}-${i}`} cx={toX(i)} cy={toY(d[l.key] as number)} r={3} fill={l.color} opacity={0.9}>
+            <title>{`${d.date} ${l.label}: ${formatTokens(d[l.key] as number)}`}</title>
+          </circle>
+        )))}
+        {data.map((d, i) => (
+          <text key={i} x={toX(i)} y={height - pad.bottom + 16} textAnchor="middle" fontSize={9} fill="currentColor"
+            transform={`rotate(-30, ${toX(i)}, ${height - pad.bottom + 16})`}>{d.date.slice(5)}</text>
+        ))}
+        <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + chartH} stroke="currentColor" opacity={0.25} />
+        <line x1={pad.left} y1={pad.top + chartH} x2={width - pad.right} y2={pad.top + chartH} stroke="currentColor" opacity={0.25} />
+      </svg>
+    </div>
+  );
+}
+
+// 响应时间趋势图
+function ResponseTrendChart({ data, height = 180 }: { data: DayStat[]; height?: number }) {
+  const filtered = data.filter(d => d.avgResponseMs > 0);
+  if (filtered.length === 0) return <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">暂无响应时间数据</div>;
+
+  const pad = { top: 16, right: 16, bottom: 50, left: 56 };
+  const width = Math.max(500, filtered.length * 56 + pad.left + pad.right);
+  const chartW = width - pad.left - pad.right;
+  const chartH = height - pad.top - pad.bottom;
+  const maxVal = Math.max(...filtered.map(d => d.avgResponseMs));
+
+  const ticks = Array.from({ length: 5 }, (_, i) => Math.round((maxVal / 4) * i));
+  function toX(i: number) { return pad.left + (i / (filtered.length - 1 || 1)) * chartW; }
+  function toY(v: number) { return pad.top + chartH - (v / maxVal) * chartH; }
+
+  const points = filtered.map((d, i) => `${toX(i)},${toY(d.avgResponseMs)}`).join(" ");
+
+  return (
+    <div className="overflow-x-auto">
+      <svg width={width} height={height} className="text-[var(--text-muted)]">
+        {ticks.map((tick, i) => (
+          <g key={i}>
+            <line x1={pad.left} y1={toY(tick)} x2={width - pad.right} y2={toY(tick)} stroke="currentColor" opacity={0.12} />
+            <text x={pad.left - 8} y={toY(tick) + 4} textAnchor="end" fontSize={10} fill="currentColor">{formatMs(tick)}</text>
+          </g>
+        ))}
+        <polyline points={points} fill="none" stroke="#f59e0b" strokeWidth={2} opacity={0.85} />
+        {filtered.map((d, i) => (
+          <circle key={i} cx={toX(i)} cy={toY(d.avgResponseMs)} r={3} fill="#f59e0b" opacity={0.9}>
+            <title>{`${d.date}: ${formatMs(d.avgResponseMs)}`}</title>
+          </circle>
+        ))}
+        {filtered.map((d, i) => (
+          <text key={`l-${i}`} x={toX(i)} y={height - pad.bottom + 16} textAnchor="middle" fontSize={9} fill="currentColor"
+            transform={`rotate(-30, ${toX(i)}, ${height - pad.bottom + 16})`}>{d.date.slice(5)}</text>
+        ))}
+        <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + chartH} stroke="currentColor" opacity={0.25} />
+        <line x1={pad.left} y1={pad.top + chartH} x2={width - pad.right} y2={pad.top + chartH} stroke="currentColor" opacity={0.25} />
+      </svg>
+    </div>
+  );
+}
+
 // 时间格式化
 function formatTimeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -210,15 +330,20 @@ export default function Home() {
   const [refreshInterval, setRefreshInterval] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [allStats, setAllStats] = useState<AllStats | null>(null);
+  const [statsRange, setStatsRange] = useState<TimeRange>("daily");
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchData = useCallback(() => {
     setLoading(true);
-    fetch("/api/config")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) setError(d.error);
-        else { setData(d); setError(null); }
+    Promise.all([
+      fetch("/api/config").then((r) => r.json()),
+      fetch("/api/stats-all").then((r) => r.json()),
+    ])
+      .then(([configData, statsData]) => {
+        if (configData.error) setError(configData.error);
+        else { setData(configData); setError(null); }
+        if (!statsData.error) setAllStats(statsData);
         setLastUpdated(new Date().toLocaleTimeString("zh-CN"));
       })
       .catch((e) => setError(e.message))
@@ -309,6 +434,65 @@ export default function Home() {
           <AgentCard key={agent.id} agent={agent} gatewayPort={data.gateway?.port || 18789} gatewayToken={data.gateway?.token} />
         ))}
       </div>
+
+      {/* 汇总统计趋势 */}
+      {allStats && (
+        <div className="mt-8 p-5 rounded-xl border border-[var(--border)] bg-[var(--card)]">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-[var(--text)]">📊 全局统计趋势</h2>
+            <div className="flex rounded-lg border border-[var(--border)] overflow-hidden">
+              {(Object.keys(RANGE_LABELS) as TimeRange[]).map((r) => (
+                <button key={r} onClick={() => setStatsRange(r)}
+                  className={`px-3 py-1 text-xs transition ${statsRange === r ? "bg-[var(--accent)] text-[var(--bg)] font-medium" : "bg-[var(--bg)] text-[var(--text-muted)] hover:text-[var(--text)]"}`}
+                >{RANGE_LABELS[r]}</button>
+              ))}
+            </div>
+          </div>
+          {(() => {
+            const currentData = allStats[statsRange];
+            const totalInput = currentData.reduce((s, d) => s + d.inputTokens, 0);
+            const totalOutput = currentData.reduce((s, d) => s + d.outputTokens, 0);
+            const totalMsgs = currentData.reduce((s, d) => s + d.messageCount, 0);
+            return (
+              <>
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  <div className="p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)]">
+                    <div className="text-[10px] text-[var(--text-muted)]">总 Input Token</div>
+                    <div className="text-lg font-bold text-blue-400">{formatTokens(totalInput)}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)]">
+                    <div className="text-[10px] text-[var(--text-muted)]">总 Output Token</div>
+                    <div className="text-lg font-bold text-emerald-400">{formatTokens(totalOutput)}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)]">
+                    <div className="text-[10px] text-[var(--text-muted)]">总消息数</div>
+                    <div className="text-lg font-bold text-purple-400">{totalMsgs}</div>
+                  </div>
+                </div>
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-[var(--text-muted)]">🔢 Token 消耗趋势</span>
+                    <div className="flex items-center gap-3 text-[10px]">
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" /> Input</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Output</span>
+                    </div>
+                  </div>
+                  <TrendChart data={currentData} lines={[
+                    { key: "inputTokens", color: "#3b82f6", label: "Input" },
+                    { key: "outputTokens", color: "#10b981", label: "Output" },
+                  ]} />
+                </div>
+                {statsRange === "daily" && (
+                  <div>
+                    <span className="text-xs text-[var(--text-muted)]">⏱️ 平均响应时间趋势</span>
+                    <ResponseTrendChart data={currentData} />
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* 群聊管理 */}
       {data.groupChats && data.groupChats.length > 0 && (

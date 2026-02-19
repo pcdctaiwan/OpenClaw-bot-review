@@ -223,7 +223,7 @@ export async function GET() {
         // 找出使用该 provider 的 agents
         const usedBy = agentsWithStatus
           .filter((a: any) => a.model.startsWith(providerId + "/"))
-          .map((a: any) => ({ id: a.id, emoji: a.emoji }));
+          .map((a: any) => ({ id: a.id, emoji: a.emoji, name: a.name }));
 
         return {
           id: providerId,
