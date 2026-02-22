@@ -327,15 +327,6 @@ function AgentCard({ agent, gatewayPort, gatewayToken, t, testResult, platformTe
           </div>
         </div>
 
-        {agent.platforms.some((p) => p.appId) && (
-          <div>
-            <span className="text-xs text-[var(--text-muted)] block mb-1">{t("agent.feishuAppId")}</span>
-            <code className="text-xs text-[var(--accent)] bg-[var(--bg)] px-2 py-0.5 rounded">
-              {agent.platforms.find((p) => p.appId)?.appId}
-            </code>
-          </div>
-        )}
-
         {agent.session && (
           <div className="pt-2 mt-2 border-t border-[var(--border)]">
             <div className="flex items-center justify-between text-xs">
