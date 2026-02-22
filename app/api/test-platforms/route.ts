@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 
@@ -241,43 +240,49 @@ async function testDiscord(
   }
 }
 
-// Agent session test: use openclaw CLI to verify agent can respond
-function testAgentSession(agentId: string): AgentTestResult {
+// Agent session test: use Gateway chatCompletions API to send health check
+// When sessionKey is provided, message routes to that session (e.g. feishu DM session)
+async function testAgentSession(agentId: string, sessionKey: string | undefined, gatewayPort: number, gatewayToken: string): Promise<{ agentId: string; ok: boolean; reply?: string; error?: string; elapsed: number }> {
   const startTime = Date.now();
   try {
-    const result = execSync(
-      `openclaw agent --agent ${agentId} --message "Health check: reply with OK" --json --timeout 30`,
-      { timeout: 40000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-    );
-
-    const elapsed = Date.now() - startTime;
-    const lines = result.split("\n");
-    const jsonStartIdx = lines.findIndex(l => l.trimStart().startsWith("{"));
-    if (jsonStartIdx === -1) {
-      return { agentId, ok: false, error: "No JSON in CLI output", elapsed };
-    }
-    const jsonStr = lines.slice(jsonStartIdx).join("\n");
-    const data = JSON.parse(jsonStr);
-    const payloads = data?.result?.payloads || [];
-    const reply = payloads[0]?.text || "";
-    const durationMs = data?.result?.meta?.durationMs || elapsed;
-    const ok = data.status === "ok";
-
-    return {
-      agentId, ok,
-      reply: reply ? reply.slice(0, 200) : (ok ? "(no reply text)" : ""),
-      error: ok ? undefined : "Agent returned error status",
-      elapsed: durationMs,
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${gatewayToken}`,
+      "x-openclaw-agent-id": agentId,
     };
-  } catch (execErr: any) {
+    if (sessionKey) {
+      headers["x-openclaw-session-key"] = sessionKey;
+    }
+
+    const resp = await fetch(`http://localhost:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: `openclaw:${agentId}`,
+        messages: [{ role: "user", content: "Health check: reply with OK" }],
+        max_tokens: 64,
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+
+    const data = await resp.json();
     const elapsed = Date.now() - startTime;
-    const isTimeout = execErr.killed || execErr.signal === "SIGTERM";
+
+    if (!resp.ok) {
+      return { agentId, ok: false, error: data.error?.message || JSON.stringify(data), elapsed };
+    }
+
+    const reply = data.choices?.[0]?.message?.content || "";
+    return {
+      agentId, ok: true,
+      reply: reply.slice(0, 200) || "(no reply)",
+      elapsed,
+    };
+  } catch (err: any) {
     return {
       agentId, ok: false,
-      error: isTimeout
-        ? "Timeout: agent not responding (30s)"
-        : (execErr.stderr || execErr.message || "Unknown error").slice(0, 300),
-      elapsed,
+      error: err.message,
+      elapsed: Date.now() - startTime,
     };
   }
 }
@@ -346,10 +351,17 @@ export async function POST() {
 
     const platformResults = await Promise.all(platformTests);
 
-    // Phase 2: Agent session tests (sequential to avoid overloading gateway)
+    // Read gateway config for Phase 2
+    const gatewayPort = config.gateway?.port || 18789;
+    const gatewayToken = config.gateway?.auth?.token || "";
+
+    // Phase 2: Agent session tests via chatCompletions API (sequential)
+    // Uses x-openclaw-session-key to route messages to feishu DM sessions
     const agentResults: PlatformTestResult[] = [];
     for (const id of agentIds) {
-      const r = testAgentSession(id);
+      const dmUser = getFeishuDmUser(id);
+      const sessionKey = dmUser ? `agent:${id}:feishu:direct:${dmUser}` : undefined;
+      const r = await testAgentSession(id, sessionKey, gatewayPort, gatewayToken);
       agentResults.push({
         agentId: r.agentId,
         platform: "agent",
