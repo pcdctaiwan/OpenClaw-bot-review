@@ -262,7 +262,7 @@ async function testAgentSession(agentId: string, sessionKey: string | undefined,
         messages: [{ role: "user", content: "Health check: reply with OK" }],
         max_tokens: 64,
       }),
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(30000),
     });
 
     const data = await resp.json();
