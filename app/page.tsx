@@ -350,7 +350,7 @@ function AgentCard({ agent, gatewayPort, gatewayToken, t, testResult, platformTe
             </div>
             <div className="flex items-center justify-between text-xs mt-1">
               <span className="text-[var(--text-muted)]">{t("agent.tokenUsage")}</span>
-              <span className="text-[var(--text)]">{(agent.session.totalTokens / 1000).toFixed(1)}k</span>
+              <span className="text-[var(--text)]">{formatTokens(agent.session.totalTokens)}</span>
             </div>
             {agent.session.lastActive && (
               <div className="flex items-center justify-between text-xs mt-1">
