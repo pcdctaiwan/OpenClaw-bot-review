@@ -489,7 +489,8 @@ export default function PixelOfficePage() {
                tileY >= f.row && tileY < f.row + entry.footprintH
       })
       const onPhoto = photographRef.current && tileX >= 10 && tileX < 17 && tileY >= -0.5 && tileY < 1
-      if (canvasRef.current) canvasRef.current.style.cursor = (onCamera || id !== null || onPhoto) ? 'pointer' : 'default'
+      const onHeatmap = contributionsRef.current && contributionsRef.current.username !== 'mock' && tileX >= 1 && tileX < 10 && tileY >= -0.5 && tileY < 1
+      if (canvasRef.current) canvasRef.current.style.cursor = (onCamera || id !== null || onPhoto || onHeatmap) ? 'pointer' : 'default'
     }
   }
 
@@ -520,6 +521,9 @@ export default function PixelOfficePage() {
         } else if (photographRef.current && tileX >= 10 && tileX < 17 && tileY >= -0.5 && tileY < 1) {
           // Click on wall photograph — fullscreen view
           setFullscreenPhoto(true)
+        } else if (contributionsRef.current && contributionsRef.current.username !== 'mock' && tileX >= 1 && tileX < 10 && tileY >= -0.5 && tileY < 1) {
+          // Click on GitHub contribution heatmap — open profile
+          window.open(`https://github.com/${contributionsRef.current.username}`, '_blank')
         } else {
           // Check character click
           const charId = office.getCharacterAt(worldX, worldY)
