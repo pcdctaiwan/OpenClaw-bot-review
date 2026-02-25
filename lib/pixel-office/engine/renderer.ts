@@ -93,6 +93,43 @@ function renderContributionHeatmap(
   }
 }
 
+/** Render photograph on right room wall (row 0, cols 12-18) */
+function renderPhotograph(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  offsetX: number, offsetY: number, zoom: number,
+): void {
+  const tileW = TILE_SIZE * zoom
+  const margin = 1 * zoom  // 1px border
+  const baseW = 7 * tileW - margin * 2
+  const baseH = tileW - margin * 2
+  const scale = 4 / 3
+  const areaW = baseW * scale
+  const areaH = baseH * scale
+  // Anchor bottom edge: shift areaY up by the extra height
+  const baseY = offsetY + margin - tileW / 8
+  const areaY = baseY + baseH - areaH
+  // Center horizontally relative to original area
+  const baseX = offsetX + 10 * tileW + margin
+  const areaX = baseX - (areaW - baseW) / 2
+  // Fit image preserving aspect ratio
+  const imgAspect = img.width / img.height
+  const areaAspect = areaW / areaH
+  let drawW: number, drawH: number, drawX: number, drawY: number
+  if (imgAspect > areaAspect) {
+    drawW = areaW
+    drawH = areaW / imgAspect
+    drawX = areaX
+    drawY = areaY + (areaH - drawH) / 2
+  } else {
+    drawH = areaH
+    drawW = areaH * imgAspect
+    drawX = areaX + (areaW - drawW) / 2
+    drawY = areaY
+  }
+  ctx.drawImage(img, Math.round(drawX), Math.round(drawY), Math.round(drawW), Math.round(drawH))
+}
+
 // ── Render functions ────────────────────────────────────────────
 
 export function renderTileGrid(
@@ -691,6 +728,7 @@ export function renderFrame(
   layoutCols?: number,
   layoutRows?: number,
   contributions?: ContributionData,
+  photograph?: HTMLImageElement,
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
@@ -729,6 +767,11 @@ export function renderFrame(
   // GitHub contribution heatmap (on top wall of left room)
   if (contributions && contributions.weeks.length > 0) {
     renderContributionHeatmap(ctx, contributions, offsetX, offsetY, zoom)
+  }
+
+  // Photograph on right room wall
+  if (photograph) {
+    renderPhotograph(ctx, photograph, offsetX, offsetY, zoom)
   }
 
   // Speech bubbles (always on top of characters)

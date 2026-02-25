@@ -70,6 +70,7 @@ export default function PixelOfficePage() {
   const [agents, setAgents] = useState<AgentActivity[]>([])
   const [hoveredAgentId, setHoveredAgentId] = useState<number | null>(null)
   const contributionsRef = useRef<ContributionData | null>(null)
+  const photographRef = useRef<HTMLImageElement | null>(null)
   const [isEditMode, setIsEditMode] = useState(false)
   const [soundOn, setSoundOn] = useState(true)
   const [editorTick, setEditorTick] = useState(0)
@@ -180,7 +181,7 @@ export default function PixelOfficePage() {
           zoomRef.current, panRef.current.x, panRef.current.y,
           { selectedAgentId: null, hoveredAgentId, hoveredTile: null, seats: office.seats, characters: office.characters },
           editorRender, office.layout.tileColors, office.layout.cols, office.layout.rows,
-          contributionsRef.current ?? undefined)
+          contributionsRef.current ?? undefined, photographRef.current ?? undefined)
       }
       animationFrameIdRef.current = requestAnimationFrame(render)
     }
@@ -199,6 +200,13 @@ export default function PixelOfficePage() {
       })),
     }))
     contributionsRef.current = { weeks, username: 'mock' }
+  }, [])
+
+  // Load photograph for right room wall
+  useEffect(() => {
+    const img = new Image()
+    img.src = '/assets/pixel-office/photograph.png'
+    img.onload = () => { photographRef.current = img }
   }, [])
 
   // Poll for agent activity + sound notification
