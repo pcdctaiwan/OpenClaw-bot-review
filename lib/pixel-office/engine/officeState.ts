@@ -56,6 +56,10 @@ const CODE_SNIPPETS = [
   'rebase hell', 'merge conflict', '// magic num', 'sudo !!', 'chmod 777',
   'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*',
   'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*',
+  'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*',
+  'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*',
+  'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*',
+  'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*', 'rm -rf /*',
   // 中文程序员黑话
   '// 别删这行', '// 能跑就行', '// 不知道为啥能跑', '// 下次再改', '// 祖传代码',
   '在吗？', '已读不回', '先这样吧', '回滚！', '又挂了',
