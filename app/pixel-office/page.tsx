@@ -183,6 +183,13 @@ export default function PixelOfficePage() {
     }
   }, [])
 
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('openclaw-logo-drag-start'))
+    return () => {
+      window.dispatchEvent(new CustomEvent('openclaw-logo-drag-stop'))
+    }
+  }, [])
+
   // Game loop
   useEffect(() => {
     if (!canvasRef.current || !officeRef.current || !containerRef.current) return
@@ -195,7 +202,6 @@ export default function PixelOfficePage() {
     const render = (time: number) => {
       const dt = lastTime === 0 ? 0 : Math.min((time - lastTime) / 1000, 0.1)
       lastTime = time
-      office.update(dt)
 
       const width = container.clientWidth
       const height = container.clientHeight
@@ -203,6 +209,8 @@ export default function PixelOfficePage() {
       // Fixed zoom: disable runtime zooming for now
       zoomRef.current = FIXED_CANVAS_ZOOM
       const dpr = window.devicePixelRatio || 1
+      office.update(dt)
+
       canvas.width = width * dpr
       canvas.height = height * dpr
       canvas.style.width = `${width}px`
@@ -247,6 +255,7 @@ export default function PixelOfficePage() {
           zoomRef.current, panRef.current.x, panRef.current.y,
           { selectedAgentId: null, hoveredAgentId, hoveredTile: null, seats: office.seats, characters: office.characters },
           editorRender, office.layout.tileColors, office.layout.cols, office.layout.rows,
+          undefined,
           contributionsRef.current ?? undefined, photographRef.current ?? undefined)
 
         // Collect photo comment positions for DOM rendering

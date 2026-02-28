@@ -28,6 +28,9 @@ import {
 } from '../layout/layoutSerializer'
 import type { InteractionPoint } from '../layout/layoutSerializer'
 import { getCatalogEntry, getOnStateType } from '../layout/furnitureCatalog'
+import { BugSystem } from '../bugs/bugSystem'
+import { BUG_DEFAULT_COUNT } from '../bugs/config'
+import type { BugEntity } from '../bugs/types'
 
 const CODE_SNIPPET_LIFETIME = 2.5 // seconds
 const CODE_SNIPPET_SPAWN_RATE = 0.6 // per second
@@ -107,6 +110,9 @@ export class OfficeState {
   private static CAT_ID = -9999
   private static LOBSTER_ID = -9998
   private static HUNTER_LOBSTER_ID = -9997
+  private bugSystem: BugSystem
+  private bugWorldWidth: number
+  private bugWorldHeight: number
 
   constructor(layout?: OfficeLayout) {
     this.layout = layout || createDefaultLayout()
@@ -120,6 +126,9 @@ export class OfficeState {
     this.spawnCat()
     this.spawnLobster()
     this.spawnHunterLobster()
+    this.bugWorldWidth = this.layout.cols * TILE_SIZE
+    this.bugWorldHeight = this.layout.rows * TILE_SIZE
+    this.bugSystem = new BugSystem(this.bugWorldWidth, this.bugWorldHeight, BUG_DEFAULT_COUNT)
   }
 
   /** Rebuild all derived state from a new layout. Reassigns existing characters.
@@ -898,6 +907,7 @@ export class OfficeState {
   }
 
   update(dt: number): void {
+    this.bugSystem.update(dt, this.bugWorldWidth, this.bugWorldHeight)
     const toDelete: number[] = []
     const firstIdleHumanoid = this.getFirstIdleHumanoid()
     for (const ch of this.characters.values()) {
@@ -998,6 +1008,35 @@ export class OfficeState {
 
   getCharacters(): Character[] {
     return Array.from(this.characters.values())
+  }
+
+  getBugs(): BugEntity[] {
+    return this.bugSystem.getBugs()
+  }
+
+  isBugEnabled(): boolean {
+    return this.bugSystem.isEnabled()
+  }
+
+  setBugEnabled(enabled: boolean): void {
+    this.bugSystem.setEnabled(enabled)
+  }
+
+  getBugTargetCount(): number {
+    return this.bugSystem.getTargetCount()
+  }
+
+  setBugTargetCount(count: number): void {
+    this.bugSystem.setTargetCount(count, this.bugWorldWidth, this.bugWorldHeight)
+  }
+
+  setBugWorldSize(width: number, height: number): void {
+    this.bugWorldWidth = Math.max(1, width)
+    this.bugWorldHeight = Math.max(1, height)
+  }
+
+  setBugCursor(x: number, y: number, active: boolean): void {
+    this.bugSystem.setCursor(x, y, active)
   }
 
   /** Get character at pixel position (for hit testing). Returns id or null. */

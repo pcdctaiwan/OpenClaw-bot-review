@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useI18n, LanguageSwitcher } from "@/lib/i18n";
 import { ThemeSwitcher } from "@/lib/theme";
+
+const BUGS_ENABLED_KEY = "pixel-office-bugs-enabled";
+const BUGS_COUNT_KEY = "pixel-office-bugs-count";
+const BUGS_MAX = 400;
 
 const NAV_ITEMS = [
   {
@@ -35,6 +39,68 @@ export function Sidebar() {
   const pathname = usePathname();
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
+  const [experimentOpen, setExperimentOpen] = useState(false);
+  const [bugsEnabled, setBugsEnabled] = useState(false);
+  const [bugsCount, setBugsCount] = useState(5);
+  const [logoCarry, setLogoCarry] = useState<{ active: boolean; dx: number; dy: number; angle: number; hidden: boolean }>({
+    active: false,
+    dx: 0,
+    dy: 0,
+    angle: 0,
+    hidden: false,
+  });
+
+  useEffect(() => {
+    const onStart = () => setLogoCarry((s) => ({ ...s, active: true, hidden: false }));
+    const onStop = () => setLogoCarry({ active: false, dx: 0, dy: 0, angle: 0, hidden: false });
+    const onProgress = (e: Event) => {
+      const ce = e as CustomEvent<{ active: boolean; dx: number; dy: number; angle: number; hidden: boolean }>;
+      const d = ce.detail;
+      if (!d) return;
+      setLogoCarry({ active: !!d.active, dx: d.dx || 0, dy: d.dy || 0, angle: d.angle || 0, hidden: !!d.hidden });
+    };
+    window.addEventListener("openclaw-logo-drag-start", onStart as EventListener);
+    window.addEventListener("openclaw-logo-drag-stop", onStop as EventListener);
+    window.addEventListener("openclaw-logo-carry-progress", onProgress as EventListener);
+    return () => {
+      window.removeEventListener("openclaw-logo-drag-start", onStart as EventListener);
+      window.removeEventListener("openclaw-logo-drag-stop", onStop as EventListener);
+      window.removeEventListener("openclaw-logo-carry-progress", onProgress as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncFromStorage = () => {
+      const enabled = localStorage.getItem(BUGS_ENABLED_KEY) === "true";
+      const raw = Number(localStorage.getItem(BUGS_COUNT_KEY) || "5");
+      const count = Math.max(0, Math.min(BUGS_MAX, Number.isFinite(raw) ? raw : 5));
+      setBugsEnabled(enabled);
+      setBugsCount(count);
+    };
+    syncFromStorage();
+    window.addEventListener("storage", syncFromStorage);
+    window.addEventListener("openclaw-bugs-config-change", syncFromStorage as EventListener);
+    return () => {
+      window.removeEventListener("storage", syncFromStorage);
+      window.removeEventListener("openclaw-bugs-config-change", syncFromStorage as EventListener);
+    };
+  }, []);
+
+  const toggleBugs = () => {
+    const next = !bugsEnabled;
+    setBugsEnabled(next);
+    localStorage.setItem(BUGS_ENABLED_KEY, String(next));
+    window.dispatchEvent(new CustomEvent("openclaw-bugs-config-change"));
+  };
+
+  const onBugCountChange = (nextCount: number) => {
+    const clamped = Math.max(0, Math.min(BUGS_MAX, nextCount));
+    setBugsCount(clamped);
+    localStorage.setItem(BUGS_COUNT_KEY, String(clamped));
+    window.dispatchEvent(new CustomEvent("openclaw-bugs-config-change"));
+  };
+
+  const isPixelOfficePage = pathname.startsWith("/pixel-office");
 
   return (
     <>
@@ -47,7 +113,17 @@ export function Sidebar() {
           {collapsed ? (
             <div className="flex flex-col items-center gap-2">
               <Link href="/">
-                <span className="text-3xl">🦞</span>
+                <span
+                  className="relative inline-block transition-opacity duration-300"
+                  style={{
+                    fontSize: "3.375rem",
+                    lineHeight: 1,
+                    transform: `translate(${logoCarry.dx}px, ${logoCarry.dy}px) rotate(${logoCarry.angle}rad)`,
+                    opacity: logoCarry.hidden ? 0 : 1,
+                  }}
+                >
+                  🦞
+                </span>
               </Link>
               <button
                 onClick={() => setCollapsed(false)}
@@ -61,7 +137,17 @@ export function Sidebar() {
             <div>
               <div className="flex items-center justify-between">
                 <Link href="/" className="flex items-center gap-2">
-                  <span className="text-3xl">🦞</span>
+                  <span
+                    className="relative inline-block transition-opacity duration-300"
+                    style={{
+                      fontSize: "3.375rem",
+                      lineHeight: 1,
+                      transform: `translate(${logoCarry.dx}px, ${logoCarry.dy}px) rotate(${logoCarry.angle}rad)`,
+                      opacity: logoCarry.hidden ? 0 : 1,
+                    }}
+                  >
+                    🦞
+                  </span>
                   <div>
                     <div className="text-sm font-bold text-[var(--text)] tracking-wide">OPENCLAW</div>
                     <div className="text-[10px] text-[var(--text-muted)] tracking-wider">BOT DASHBOARD</div>
@@ -121,6 +207,56 @@ export function Sidebar() {
                 </div>
               </div>
             ))}
+            {!collapsed && isPixelOfficePage && (
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--card)]/65 p-1">
+                <button
+                  onClick={() => setExperimentOpen((v) => !v)}
+                  className={`w-full flex items-center justify-between rounded-lg px-3 py-2 transition-colors ${
+                    experimentOpen
+                      ? "bg-[var(--accent)]/12 text-[var(--accent)] border border-[var(--accent)]/35"
+                      : "bg-[var(--bg)] text-[var(--text)] border border-[var(--border)] hover:bg-[var(--accent)]/8"
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="text-sm">🧪</span>
+                    <span className="text-sm font-semibold tracking-wide">实验功能</span>
+                  </span>
+                  <span
+                    className={`inline-flex items-center justify-center text-base leading-none transition-transform ${
+                      experimentOpen ? "text-[var(--accent)] rotate-180" : "text-[var(--text-muted)]"
+                    }`}
+                  >
+                    ⌄
+                  </span>
+                </button>
+                {experimentOpen && (
+                  <div className="mt-2 space-y-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2">
+                    <button
+                      onClick={toggleBugs}
+                      className={`w-full px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                        bugsEnabled
+                          ? "bg-[var(--accent)]/10 border-[var(--accent)]/30 text-[var(--accent)]"
+                          : "bg-[var(--card)] border-[var(--border)] text-[var(--text-muted)]"
+                      }`}
+                    >
+                      {bugsEnabled ? "🐛 Bugs On" : "🐛 Bugs Off"}
+                    </button>
+                    <label className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs rounded-lg border bg-[var(--card)] border-[var(--border)] text-[var(--text-muted)]">
+                      <span>Count {bugsCount}</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={BUGS_MAX}
+                        step={1}
+                        value={bugsCount}
+                        onChange={(e) => onBugCountChange(Number(e.target.value))}
+                        className="w-24 accent-[var(--accent)]"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </nav>
       </aside>

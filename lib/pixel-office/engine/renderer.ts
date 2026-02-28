@@ -7,6 +7,8 @@ import { getCharacterSprite } from './characters'
 import { renderMatrixEffect } from './matrixEffect'
 import { getColorizedFloorSprite, hasFloorSprites, WALL_COLOR } from '../floorTiles'
 import { hasWallSprites, getWallInstances, wallColorToHex } from '../wallTiles'
+import type { BugEntity } from '../bugs/types'
+import { renderBugs } from '../bugs/renderer'
 import {
   CHARACTER_SITTING_OFFSET_PX,
   CHARACTER_Z_SORT_OFFSET,
@@ -902,6 +904,7 @@ export function renderFrame(
   tileColors?: Array<FloorColor | null>,
   layoutCols?: number,
   layoutRows?: number,
+  bugs?: BugEntity[],
   contributions?: ContributionData,
   photograph?: HTMLImageElement,
 ): { offsetX: number; offsetY: number } {
@@ -920,6 +923,10 @@ export function renderFrame(
 
   // Draw tiles (floor + wall base color)
   renderTileGrid(ctx, tileMap, offsetX, offsetY, zoom, tileColors, layoutCols)
+
+  if (bugs && bugs.length > 0) {
+    renderBugs(ctx, bugs, offsetX, offsetY, zoom)
+  }
 
   // Seat indicators (below furniture/characters, on top of floor)
   if (selection) {
