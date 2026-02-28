@@ -13,7 +13,7 @@ import {
   expandLayout, getWallPlacementRow,
 } from '@/lib/pixel-office/editor/editorActions'
 import type { ExpandDirection } from '@/lib/pixel-office/editor/editorActions'
-import { TILE_SIZE, ZOOM_MIN, ZOOM_MAX } from '@/lib/pixel-office/constants'
+import { TILE_SIZE } from '@/lib/pixel-office/constants'
 import { TileType, EditTool } from '@/lib/pixel-office/types'
 import type { TileType as TileTypeVal, FloorColor, OfficeLayout } from '@/lib/pixel-office/types'
 import { getCatalogEntry, isRotatable } from '@/lib/pixel-office/layout/furnitureCatalog'
@@ -105,6 +105,8 @@ function getGhostBorderDirection(col: number, row: number, cols: number, rows: n
   return null
 }
 
+const FIXED_CANVAS_ZOOM = 2.5
+
 export default function PixelOfficePage() {
   const { t } = useI18n()
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -113,7 +115,7 @@ export default function PixelOfficePage() {
   const editorRef = useRef<EditorState>(new EditorState())
   const agentIdMapRef = useRef<Map<string, number>>(new Map())
   const nextIdRef = useRef<{ current: number }>({ current: 1 })
-  const zoomRef = useRef<number>(0) // 0 = auto-fit on first render
+  const zoomRef = useRef<number>(FIXED_CANVAS_ZOOM)
   const panRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
   const savedLayoutRef = useRef<OfficeLayout | null>(null)
   const animationFrameIdRef = useRef<number | null>(null)
@@ -197,13 +199,8 @@ export default function PixelOfficePage() {
       const width = container.clientWidth
       const height = container.clientHeight
 
-      // Auto-fit zoom on first render
-      if (zoomRef.current === 0) {
-        const mapW = office.layout.cols * TILE_SIZE
-        const mapH = office.layout.rows * TILE_SIZE
-        const fitZoom = Math.floor(Math.min(width / mapW, height / mapH) * 2) / 2
-        zoomRef.current = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, fitZoom))
-      }
+      // Fixed zoom: disable runtime zooming for now
+      zoomRef.current = FIXED_CANVAS_ZOOM
       const dpr = window.devicePixelRatio || 1
       canvas.width = width * dpr
       canvas.height = height * dpr
@@ -493,12 +490,6 @@ export default function PixelOfficePage() {
   }, [forceEditorUpdate])
 
   // ── Mouse events ──────────────────────────────────────────
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? -0.5 : 0.5
-    zoomRef.current = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomRef.current + delta))
-  }
-
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!canvasRef.current || !officeRef.current) return
     const office = officeRef.current
@@ -956,7 +947,7 @@ export default function PixelOfficePage() {
   }, [])
 
   const resetView = useCallback(() => {
-    zoomRef.current = 0 // triggers auto-fit on next frame
+    zoomRef.current = FIXED_CANVAS_ZOOM
     panRef.current = { x: 0, y: 0 }
   }, [])
 
@@ -1037,7 +1028,7 @@ export default function PixelOfficePage() {
       {/* Canvas */}
       <div ref={containerRef} className="flex-1 relative overflow-hidden bg-[#1a1a2e]">
         <canvas ref={canvasRef}
-          onWheel={handleWheel} onMouseMove={handleMouseMove}
+          onMouseMove={handleMouseMove}
           onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
           onContextMenu={handleContextMenu}
           className="w-full h-full" />
