@@ -78,6 +78,7 @@ export function createCharacter(
     hueShift,
     frame: 0,
     frameTimer: 0,
+    moveSpeedMultiplier: 1,
     wanderTimer: 0,
     wanderCount: 0,
     wanderLimit: randomInt(WANDER_MOVES_BEFORE_REST_MIN, WANDER_MOVES_BEFORE_REST_MAX),
@@ -310,7 +311,8 @@ export function updateCharacter(
       const nextTile = ch.path[0]
       ch.dir = directionBetween(ch.tileCol, ch.tileRow, nextTile.col, nextTile.row)
 
-      ch.moveProgress += (WALK_SPEED_PX_PER_SEC / TILE_SIZE) * dt
+      const speedMultiplier = ch.moveSpeedMultiplier > 0 ? ch.moveSpeedMultiplier : 1
+      ch.moveProgress += ((WALK_SPEED_PX_PER_SEC * speedMultiplier) / TILE_SIZE) * dt
 
       const fromCenter = tileCenter(ch.tileCol, ch.tileRow)
       const toCenter = tileCenter(nextTile.col, nextTile.row)

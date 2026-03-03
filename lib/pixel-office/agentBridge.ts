@@ -3,6 +3,7 @@ import { OfficeState } from './engine/officeState'
 export interface SubagentInfo {
   toolId: string
   label: string
+  sessionKey?: string
 }
 
 export interface AgentActivity {
@@ -16,8 +17,9 @@ export interface AgentActivity {
   subagents?: SubagentInfo[]
 }
 
-/** Track which subagent toolIds were active last sync, per parent agent */
+/** Track which subagent keys were active last sync, per parent agent */
 const prevSubagentKeys = new Map<string, Set<string>>()
+const TEMP_WORKER_LABEL = '临时工'
 
 /** Track previous agent states to detect offline→working transitions */
 const prevAgentStates = new Map<string, string>()
@@ -88,11 +90,20 @@ export function syncAgentsToOffice(
     const currentSubKeys = new Set<string>()
     if (activity.subagents) {
       for (const sub of activity.subagents) {
-        currentSubKeys.add(sub.toolId)
-        const existingSubId = office.getSubagentId(charId, sub.toolId)
+        const subKey = sub.sessionKey ? `${sub.sessionKey}::${sub.toolId}` : sub.toolId
+        currentSubKeys.add(subKey)
+        const existingSubId = office.getSubagentId(charId, subKey)
         if (existingSubId === null) {
-          const subId = office.addSubagent(charId, sub.toolId)
+          const subId = office.addSubagent(charId, subKey)
           office.setAgentActive(subId, true)
+          const subCh = office.characters.get(subId)
+          if (subCh) subCh.label = TEMP_WORKER_LABEL
+        } else {
+          const subCh = office.characters.get(existingSubId)
+          if (subCh) {
+            subCh.label = TEMP_WORKER_LABEL
+            office.setAgentActive(existingSubId, true)
+          }
         }
       }
     }
@@ -100,9 +111,9 @@ export function syncAgentsToOffice(
     // Remove subagents that are no longer active
     const prevKeys = prevSubagentKeys.get(activity.agentId)
     if (prevKeys) {
-      for (const toolId of prevKeys) {
-        if (!currentSubKeys.has(toolId)) {
-          office.removeSubagent(charId, toolId)
+      for (const subKey of prevKeys) {
+        if (!currentSubKeys.has(subKey)) {
+          office.removeSubagent(charId, subKey)
         }
       }
     }

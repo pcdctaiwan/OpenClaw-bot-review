@@ -183,6 +183,7 @@ export interface Character {
   hueShift: number
   frame: number
   frameTimer: number
+  moveSpeedMultiplier: number
   wanderTimer: number
   wanderCount: number
   wanderLimit: number

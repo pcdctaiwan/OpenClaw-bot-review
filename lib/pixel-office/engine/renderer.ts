@@ -231,6 +231,11 @@ export function renderScene(
   photograph?: HTMLImageElement,
 ): void {
   const drawables: ZDrawable[] = []
+  const laptopSizeScale = 0.7
+  const laptopXTiltRad = (50 * Math.PI) / 180
+  const laptopUpwardSpinRad = -Math.PI / 12
+  const laptopTiltScaleY = Math.max(0.22, Math.abs(Math.cos(laptopXTiltRad)))
+  const laptopTiltSkewX = -Math.sin(laptopXTiltRad) * 0.35
 
   // Wall decorations as z-sorted drawables (zY just above row 0 walls so they render on top of walls but below characters)
   const wallDecoZY = TILE_SIZE + 0.5
@@ -300,6 +305,52 @@ export function renderScene(
   // Characters
   for (const ch of characters) {
     const charZY = ch.y + TILE_SIZE / 2 + CHARACTER_Z_SORT_OFFSET
+
+    // Subagent temporary laptop: place it in front of the character using
+    // live world coordinates, so it stays aligned with seated offsets.
+    if (ch.isSubagent && ch.state === CharacterState.TYPE && ch.seatId) {
+      let dx = 0
+      let dy = 0
+      if (ch.dir === Direction.LEFT) dx = -1
+      else if (ch.dir === Direction.RIGHT) dx = 1
+      else if (ch.dir === Direction.UP) dy = -1
+      else dy = 1
+
+      const forwardOffsetPx = TILE_SIZE * 0.62
+      const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0
+      const laptopWorldX = ch.x + dx * forwardOffsetPx
+      const laptopWorldY = ch.y + sittingOffset + dy * forwardOffsetPx - 5 - TILE_SIZE / 8
+      const laptopX = offsetX + laptopWorldX * zoom
+      const laptopY = offsetY + laptopWorldY * zoom
+      const laptopFacing =
+        ch.dir === Direction.LEFT ? Direction.RIGHT :
+        ch.dir === Direction.RIGHT ? Direction.LEFT :
+        ch.dir === Direction.UP ? Direction.DOWN :
+        Direction.UP
+      const laptopRotation =
+        laptopFacing === Direction.DOWN ? 0 :
+        laptopFacing === Direction.LEFT ? 90 :
+        laptopFacing === Direction.UP ? 180 : 270
+      const laptopZY = laptopWorldY + TILE_SIZE * 0.45
+
+      drawables.push({
+        zY: laptopZY,
+        draw: (c) => {
+          const emojiSize = TILE_SIZE * zoom * laptopSizeScale
+          c.save()
+          c.translate(Math.round(laptopX), Math.round(laptopY))
+          c.rotate((laptopRotation * Math.PI) / 180)
+          // Composite transform: X-axis tilt + extra upward spin around laptop center.
+          c.rotate(laptopUpwardSpinRad)
+          c.transform(1, 0, laptopTiltSkewX, laptopTiltScaleY, 0, 0)
+          c.font = `${emojiSize}px serif`
+          c.textAlign = 'center'
+          c.textBaseline = 'middle'
+          c.fillText('💻', 0, 0)
+          c.restore()
+        },
+      })
+    }
 
     if (ch.isLobster) {
       const lobsterX = Math.round(offsetX + ch.x * zoom)
@@ -409,7 +460,9 @@ export function renderScene(
       const isWorking = ch.isActive && ch.state === CharacterState.TYPE
       // Blink effect for working state: use time-based alpha
       const labelAlpha = isWorking ? 0.7 + 0.3 * Math.sin(Date.now() / 300) : 1.0
-      const labelColor = isWorking ? `rgba(34,197,94,${labelAlpha})` : '#FFD700'
+      const labelColor = ch.isSubagent
+        ? (isWorking ? `rgba(220,38,38,${labelAlpha})` : '#991B1B')
+        : (isWorking ? `rgba(34,197,94,${labelAlpha})` : '#FFD700')
       drawables.push({
         zY: charZY + 0.1,
         draw: (c) => {

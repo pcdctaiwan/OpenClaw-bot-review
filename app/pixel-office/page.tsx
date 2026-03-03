@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { OfficeState } from '@/lib/pixel-office/engine/officeState'
 import { renderFrame } from '@/lib/pixel-office/engine/renderer'
 import { buildGatewayUrl } from "@/lib/gateway-url"
@@ -43,6 +43,16 @@ type ReleaseInfo = {
   publishedAt: string
   body: string
   htmlUrl: string
+}
+
+type AgentStats = {
+  sessionCount: number
+  messageCount: number
+  totalTokens: number
+  todayAvgResponseMs: number
+  weeklyResponseMs: number[]
+  weeklyTokens: number[]
+  lastActive: number | null
 }
 
 function MiniSparkline({ data, width = 120, height = 24, color: fixedColor }: { data: number[]; width?: number; height?: number; color?: string }) {
@@ -162,6 +172,7 @@ const MOBILE_VIEW_NUDGE_Y_PX = -10
 const CODE_SNIPPET_LIFETIME_SEC = 5.5
 const FLOATING_TICK_INTERVAL_DESKTOP_MS = 48
 const FLOATING_TICK_INTERVAL_MOBILE_MS = 32
+const AGENT_ACTIVITY_POLL_INTERVAL_MS = 1000
 
 let cachedOfficeState: OfficeState | null = null
 let cachedEditorState: EditorState | null = null
@@ -191,7 +202,7 @@ export default function PixelOfficePage() {
   const [agents, setAgents] = useState<AgentActivity[]>(cachedAgents)
   const [hoveredAgentId, setHoveredAgentId] = useState<number | null>(null)
   const mousePosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
-  const agentStatsRef = useRef<Map<string, { sessionCount: number; messageCount: number; totalTokens: number; todayAvgResponseMs: number; weeklyResponseMs: number[]; weeklyTokens: number[]; lastActive: number | null }>>(new Map())
+  const agentStatsRef = useRef<Map<string, AgentStats>>(new Map())
   const contributionsRef = useRef<ContributionData | null>(null)
   const photographRef = useRef<HTMLImageElement | null>(null)
   const gatewayRef = useRef<{ port: number; token?: string; host?: string }>({ port: 18789 })
@@ -556,7 +567,7 @@ export default function PixelOfficePage() {
     }
     const fetchAgents = async () => {
       try {
-        const res = await fetch('/api/agent-activity')
+        const res = await fetch('/api/agent-activity', { cache: 'no-store' })
         const data = await res.json()
         const newAgents: AgentActivity[] = data.agents || []
         setAgents(newAgents)
@@ -596,7 +607,7 @@ export default function PixelOfficePage() {
       }
     }
     fetchAgents()
-    const interval = setInterval(fetchAgents, 10000)
+    const interval = setInterval(fetchAgents, AGENT_ACTIVITY_POLL_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [])
 
@@ -1230,10 +1241,27 @@ export default function PixelOfficePage() {
     for (const [aid, cid] of map.entries()) {
       if (cid === hoveredAgentId) { agentId = aid; break }
     }
-    if (!agentId) return null
-    const agent = agents.find(a => a.agentId === agentId)
-    const stats = agentStatsRef.current.get(agentId)
-    return { agent, stats }
+    if (agentId) {
+      const agent = agents.find(a => a.agentId === agentId)
+      const stats = agentStatsRef.current.get(agentId)
+      return { agent, stats, isSubagent: false as const, parentAgentId: null as string | null }
+    }
+
+    const hoveredCharacter = officeRef.current?.characters.get(hoveredAgentId)
+    if (!hoveredCharacter?.isSubagent || hoveredCharacter.parentAgentId == null) return null
+    let parentAgentId: string | null = null
+    for (const [aid, cid] of map.entries()) {
+      if (cid === hoveredCharacter.parentAgentId) { parentAgentId = aid; break }
+    }
+    if (!parentAgentId) return null
+    const parentAgent = agents.find(a => a.agentId === parentAgentId)
+    if (!parentAgent) return null
+    return {
+      agent: parentAgent,
+      stats: agentStatsRef.current.get(parentAgentId),
+      isSubagent: true as const,
+      parentAgentId,
+    }
   }, [hoveredAgentId, agents])
 
   const hoveredInfo = getHoveredAgentInfo()
@@ -1248,28 +1276,76 @@ export default function PixelOfficePage() {
     isMobileViewport
       ? `w-full ${maxHeight} overflow-y-auto rounded-t-2xl border-x border-t border-[var(--border)] bg-[var(--card)] shadow-2xl p-4 pb-6`
       : `${desktopWidth} ${maxHeight} overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl p-4`
+  const displayAgents = useMemo<AgentActivity[]>(() => {
+    const expanded: AgentActivity[] = []
+    for (const agent of agents) {
+      expanded.push(agent)
+      if (!agent.subagents?.length) continue
+      for (const sub of agent.subagents) {
+        const subKey = sub.sessionKey ? `${sub.sessionKey}::${sub.toolId}` : sub.toolId
+        expanded.push({
+          agentId: `subagent:${agent.agentId}:${subKey}`,
+          name: `临时工 ${agent.agentId}`,
+          emoji: agent.emoji,
+          state: 'working',
+          lastActive: agent.lastActive,
+        })
+      }
+    }
+    return expanded
+  }, [agents])
+
   const mobileAgentPages: AgentActivity[][] = []
-  for (let i = 0; i < agents.length; i += 9) {
-    mobileAgentPages.push(agents.slice(i, i + 9))
+  for (let i = 0; i < displayAgents.length; i += 9) {
+    mobileAgentPages.push(displayAgents.slice(i, i + 9))
   }
-  const renderAgentChip = (agent: AgentActivity, mobileGrid = false) => (
-    <div key={agent.agentId} className={`pixel-agent-chip inline-flex items-center rounded-lg border transition-colors ${
-      mobileGrid ? 'w-full min-w-0 gap-1.5 px-2 py-1.5' : 'shrink-0 gap-2 px-3 py-1.5'
-    } ${
-      agent.state === 'working' ? `pixel-agent-chip-working${isMobileViewport ? '' : ' animate-pulse'}` :
-      agent.state === 'idle' ? `pixel-agent-chip-idle${isMobileViewport ? '' : ' animate-pulse'}` :
-      'pixel-agent-chip-neutral'
-    }`}
-      {...(agent.state === 'working' && !isMobileViewport ? { style: { animationDuration: '1.3s' } } : {})}
-    >
-      <span className={mobileGrid ? 'shrink-0 text-sm' : ''}>{agent.emoji}</span>
-      <span className={mobileGrid ? 'min-w-0 text-xs truncate' : 'text-sm'}>{agent.name}</span>
-      {agent.state === 'working' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.working')}</span>}
-      {agent.state === 'idle' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.idle')}</span>}
-      {agent.state === 'offline' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.offline')}</span>}
-      {agent.state === 'waiting' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.waiting')}</span>}
-    </div>
-  )
+  const renderAgentChip = (agent: AgentActivity, mobileGrid = false) => {
+    const isTempWorker = agent.agentId.startsWith('subagent:')
+    const parentAgentIdFromKey = isTempWorker ? (agent.agentId.split(':')[1] || '') : ''
+    const tempWorkerOwner = isTempWorker ? (agent.name.replace(/^临时工\s*/, '') || parentAgentIdFromKey) : ''
+    const chipTooltip = isTempWorker
+      ? `${tempWorkerOwner} agent创建的subagent`
+      : `agent id：${agent.agentId}`
+    const chipToneClass = isTempWorker
+      ? 'bg-red-900/45 border-red-700/80 text-red-100 animate-pulse'
+      : (
+        agent.state === 'working' ? `pixel-agent-chip-working${isMobileViewport ? '' : ' animate-pulse'}` :
+        agent.state === 'idle' ? `pixel-agent-chip-idle${isMobileViewport ? '' : ' animate-pulse'}` :
+        'pixel-agent-chip-neutral'
+      )
+    return (
+      <div key={agent.agentId} className="group relative overflow-visible">
+        <div className={`pixel-agent-chip inline-flex h-8 items-center overflow-hidden rounded-lg border transition-colors ${
+          mobileGrid ? 'w-full min-w-0 gap-1.5 px-2 py-1.5' : 'shrink-0 gap-2 px-3 py-1.5'
+        } ${chipToneClass}`}
+          title={chipTooltip}
+          aria-label={chipTooltip}
+          {...(agent.state === 'working'
+            ? { style: { animationDuration: isTempWorker ? '0.9s' : '1.3s' } }
+            : {})}
+        >
+          <span className={mobileGrid ? 'shrink-0 text-sm' : ''}>{agent.emoji}</span>
+          {isTempWorker ? (
+            <span className={`min-w-0 flex flex-col justify-center ${mobileGrid ? 'max-w-[4.6rem]' : 'max-w-[5.8rem]'} leading-none`}>
+              <span className={`${mobileGrid ? 'text-[10px]' : 'text-[12px]'} truncate`}>临时工</span>
+              <span className={`${mobileGrid ? 'text-[10px]' : 'text-[12px]'} truncate`}>{tempWorkerOwner}</span>
+            </span>
+          ) : (
+            <span className={mobileGrid ? 'min-w-0 text-xs truncate' : 'text-sm'}>{agent.name}</span>
+          )}
+          {agent.state === 'working' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'} ${isTempWorker ? 'text-red-100' : 'text-green-200'}`}>{t('pixelOffice.state.working')}</span>}
+          {agent.state === 'idle' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.idle')}</span>}
+          {agent.state === 'offline' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.offline')}</span>}
+          {agent.state === 'waiting' && <span className={`pixel-agent-chip-state uppercase tracking-wider ${mobileGrid ? 'text-[9px] truncate' : 'text-[10px]'}`}>{t('pixelOffice.state.waiting')}</span>}
+        </div>
+        {!isMobileViewport && (
+          <div className="pointer-events-none absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-[calc(100%+6px)] whitespace-nowrap rounded-md border border-[var(--border)] bg-[var(--card)]/95 px-2 py-1 text-[11px] text-[var(--text)] opacity-0 shadow-md transition-opacity duration-150 group-hover:opacity-100">
+            {chipTooltip}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="relative flex flex-col overflow-hidden h-[calc(100dvh-3.5rem)] md:h-full">
@@ -1329,7 +1405,7 @@ export default function PixelOfficePage() {
           </div>
         </div>
         <div className="md:hidden overflow-x-auto pb-1">
-          {agents.length === 0 ? (
+          {displayAgents.length === 0 ? (
             <div className="text-[var(--text-muted)] text-sm">{t('common.noData')}</div>
           ) : (
             <div className="flex gap-2 min-w-full snap-x snap-mandatory">
@@ -1345,8 +1421,8 @@ export default function PixelOfficePage() {
           )}
         </div>
         <div className="hidden md:flex gap-2 flex-1 flex-wrap">
-          {agents.map((agent) => renderAgentChip(agent))}
-          {agents.length === 0 && (
+          {displayAgents.map((agent) => renderAgentChip(agent))}
+          {displayAgents.length === 0 && (
             <div className="text-[var(--text-muted)] text-sm">{t('common.noData')}</div>
           )}
         </div>
@@ -1401,14 +1477,20 @@ export default function PixelOfficePage() {
             style={{ left: Math.min(mousePosRef.current.x + 12, (containerRef.current?.clientWidth || 300) - 180), top: mousePosRef.current.y + 12 }}>
             <div className="flex items-center gap-1.5 mb-1.5">
               <span>{hoveredInfo.agent.emoji}</span>
-              <span className="font-semibold text-[var(--text)]">{hoveredInfo.agent.name}</span>
+              <span className="font-semibold text-[var(--text)]">{hoveredInfo.isSubagent ? '临时工' : hoveredInfo.agent.name}</span>
             </div>
-            <div className="space-y-0.5 text-[var(--text-muted)]">
-              <div className="flex justify-between gap-4"><span>{t('agent.sessionCount')}</span><span className="text-[var(--text)]">{hoveredInfo.stats?.sessionCount ?? '--'}</span></div>
-              <div className="flex justify-between gap-4"><span>{t('agent.messageCount')}</span><span className="text-[var(--text)]">{hoveredInfo.stats?.messageCount ?? '--'}</span></div>
-              <div className="flex justify-between gap-4"><span>{t('agent.tokenUsage')}</span><span className="text-[var(--text)]">{hoveredInfo.stats ? formatTokens(hoveredInfo.stats.totalTokens) : '--'}</span></div>
-              <div className="flex justify-between gap-4"><span>{t('agent.todayAvgResponse')}</span><span className="text-[var(--text)]">{hoveredInfo.stats?.todayAvgResponseMs ? `${(hoveredInfo.stats.todayAvgResponseMs / 1000).toFixed(1)}s` : '--'}</span></div>
-            </div>
+            {hoveredInfo.isSubagent ? (
+              <div className="text-[var(--text-muted)]">
+                {(hoveredInfo.parentAgentId || 'unknown')} agent创建的subagent
+              </div>
+            ) : (
+              <div className="space-y-0.5 text-[var(--text-muted)]">
+                <div className="flex justify-between gap-4"><span>{t('agent.sessionCount')}</span><span className="text-[var(--text)]">{hoveredInfo.stats?.sessionCount ?? '--'}</span></div>
+                <div className="flex justify-between gap-4"><span>{t('agent.messageCount')}</span><span className="text-[var(--text)]">{hoveredInfo.stats?.messageCount ?? '--'}</span></div>
+                <div className="flex justify-between gap-4"><span>{t('agent.tokenUsage')}</span><span className="text-[var(--text)]">{hoveredInfo.stats ? formatTokens(hoveredInfo.stats.totalTokens) : '--'}</span></div>
+                <div className="flex justify-between gap-4"><span>{t('agent.todayAvgResponse')}</span><span className="text-[var(--text)]">{hoveredInfo.stats?.todayAvgResponseMs ? `${(hoveredInfo.stats.todayAvgResponseMs / 1000).toFixed(1)}s` : '--'}</span></div>
+              </div>
+            )}
           </div>
         )}
 

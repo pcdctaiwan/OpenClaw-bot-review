@@ -88,6 +88,15 @@ const PHOTO_COMMENTS = [
   '不愧是中国布列松', '这是决定性瞬间！！！', '这个复杂构图绝了！',
 ]
 
+const TEMP_WORKER_LABEL = '临时工'
+const SUBAGENT_PRIORITY_SEAT_IDS = [
+  'stool-r1', 'stool-r2', 'stool-r3', 'stool-r4',
+  'stool-r5', 'stool-r6', 'stool-r7', 'stool-r8',
+] as const
+const SUBAGENT_SPAWN_CENTER_COL = 10
+const SUBAGENT_SPAWN_CENTER_ROW = 14
+const SUBAGENT_RUN_SPEED_MULTIPLIER = 2.8
+
 export class OfficeState {
   layout: OfficeLayout
   tileMap: TileTypeVal[][]
@@ -244,6 +253,25 @@ export class OfficeState {
       if (!seat.assigned) return uid
     }
     return null
+  }
+
+  private getSubagentSpawnCandidates(): Array<{ col: number; row: number }> {
+    if (this.walkableTiles.length === 0) return [{ col: 1, row: 1 }]
+    const preferred = this.walkableTiles.filter((t) => t.row >= 11)
+    const candidates = preferred.length > 0 ? preferred : this.walkableTiles
+    const occupied = new Set<string>()
+    for (const ch of this.characters.values()) {
+      occupied.add(`${ch.tileCol},${ch.tileRow}`)
+    }
+    const free = candidates.filter((t) => !occupied.has(`${t.col},${t.row}`))
+    const source = free.length > 0 ? free : candidates
+    return source
+      .slice()
+      .sort((a, b) => {
+        const da = Math.abs(a.col - SUBAGENT_SPAWN_CENTER_COL) + Math.abs(a.row - SUBAGENT_SPAWN_CENTER_ROW)
+        const db = Math.abs(b.col - SUBAGENT_SPAWN_CENTER_COL) + Math.abs(b.row - SUBAGENT_SPAWN_CENTER_ROW)
+        return da - db
+      })
   }
 
   /**
@@ -667,13 +695,22 @@ export class OfficeState {
       Math.abs(c - parentCol) + Math.abs(r - parentRow)
 
     let bestSeatId: string | null = null
-    let bestDist = Infinity
-    for (const [uid, seat] of this.seats) {
-      if (!seat.assigned) {
-        const d = dist(seat.seatCol, seat.seatRow)
-        if (d < bestDist) {
-          bestDist = d
-          bestSeatId = uid
+    for (const seatId of SUBAGENT_PRIORITY_SEAT_IDS) {
+      const seat = this.seats.get(seatId)
+      if (seat && !seat.assigned) {
+        bestSeatId = seatId
+        break
+      }
+    }
+    if (!bestSeatId) {
+      let bestDist = Infinity
+      for (const [uid, seat] of this.seats) {
+        if (!seat.assigned) {
+          const d = dist(seat.seatCol, seat.seatRow)
+          if (d < bestDist) {
+            bestDist = d
+            bestSeatId = uid
+          }
         }
       }
     }
@@ -682,7 +719,35 @@ export class OfficeState {
     if (bestSeatId) {
       const seat = this.seats.get(bestSeatId)!
       seat.assigned = true
-      ch = createCharacter(id, palette, bestSeatId, seat, hueShift)
+      ch = createCharacter(id, palette, bestSeatId, null, hueShift)
+      ch.moveSpeedMultiplier = SUBAGENT_RUN_SPEED_MULTIPLIER
+      const targetCol = Math.round(seat.seatCol)
+      const targetRow = Math.round(seat.seatRow)
+      const spawnCandidates = this.getSubagentSpawnCandidates()
+      let selectedSpawn: { col: number; row: number } | null = null
+      let selectedPath: Array<{ col: number; row: number }> = []
+      for (const candidate of spawnCandidates) {
+        const path = this.withOwnSeatUnblocked(ch, () =>
+          findPath(candidate.col, candidate.row, targetCol, targetRow, this.tileMap, this.blockedTiles)
+        )
+        if (path.length > 0) {
+          selectedSpawn = candidate
+          selectedPath = path
+          break
+        }
+      }
+      if (selectedSpawn && selectedPath.length > 0) {
+        ch.tileCol = selectedSpawn.col
+        ch.tileRow = selectedSpawn.row
+        ch.x = selectedSpawn.col * TILE_SIZE + TILE_SIZE / 2
+        ch.y = selectedSpawn.row * TILE_SIZE + TILE_SIZE / 2
+        ch.path = selectedPath
+        ch.state = CharacterState.WALK
+        ch.moveProgress = 0
+      } else {
+        // Rare fallback: if no candidate has a path, keep old behavior and place at seat.
+        ch = createCharacter(id, palette, bestSeatId, seat, hueShift)
+      }
     } else {
       // No seats — spawn at closest walkable tile to parent
       let spawn = { col: 1, row: 1 }
@@ -703,9 +768,11 @@ export class OfficeState {
       ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2
       ch.tileCol = spawn.col
       ch.tileRow = spawn.row
+      ch.moveSpeedMultiplier = SUBAGENT_RUN_SPEED_MULTIPLIER
     }
     ch.isSubagent = true
     ch.parentAgentId = parentAgentId
+    ch.label = TEMP_WORKER_LABEL
     ch.matrixEffect = 'spawn'
     ch.matrixEffectTimer = 0
     ch.matrixEffectSeeds = matrixEffectSeeds()
