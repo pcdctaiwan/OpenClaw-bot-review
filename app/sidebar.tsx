@@ -252,11 +252,12 @@ export function Sidebar() {
               draggable={false}
             >
               <span
-                className="relative inline-block text-2xl leading-none transition-opacity duration-300"
+                className="relative inline-block leading-none transition-opacity duration-300"
                 data-openclaw-logo-anchor="true"
                 onDragStart={handleLogoNativeDragStart}
                 draggable={false}
                 style={{
+                  fontSize: "1.875rem",
                   transform: mobileLogoTransform,
                   transformOrigin: "50% 50%",
                   opacity: logoCarry.hidden ? 0 : 1,
