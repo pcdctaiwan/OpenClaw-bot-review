@@ -1,11 +1,43 @@
 import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
-import { execFileSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import { pathToFileURL } from "url";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
 import { shouldHidePlatformChannel } from "@/lib/platforms";
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
+
+function resolveSecretRef(value: any): string | null {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  try {
+    // env: read from environment variable
+    if (value.source === "env" && value.id) {
+      return process.env[value.id] || null;
+    }
+    // file: read from file path
+    if (value.source === "file" && value.id) {
+      return fs.readFileSync(value.id, "utf-8").trim() || null;
+    }
+    // exec + keychain: macOS Keychain (security command)
+    if (value.source === "exec" && value.provider === "keychain" && value.id) {
+      if (process.platform !== "darwin") return null;
+      const result = execSync(`security find-generic-password -a ${JSON.stringify(value.id)} -w`, { encoding: "utf8" }).trim();
+      return result || null;
+    }
+    // exec + 1password: op CLI
+    if (value.source === "exec" && value.provider === "1password" && value.id) {
+      const result = execSync(`op read ${JSON.stringify(value.id)}`, { encoding: "utf8" }).trim();
+      return result || null;
+    }
+    // exec + pass: Unix pass store
+    if (value.source === "exec" && value.provider === "pass" && value.id) {
+      const result = execSync(`pass show ${JSON.stringify(value.id)}`, { encoding: "utf8" }).split("\n")[0].trim();
+      return result || null;
+    }
+  } catch {}
+  return null;
+}
 const QQBOT_TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 const QQBOT_API_BASE = "https://api.sgroup.qq.com";
 const YUANBAO_PLUGIN_DIST_DIR = path.join(OPENCLAW_HOME, "extensions/openclaw-plugin-yuanbao/dist/src");

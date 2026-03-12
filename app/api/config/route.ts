@@ -544,7 +544,7 @@ export async function GET() {
       gateway: {
         port: config.gateway?.port || 18789,
         token: config.gateway?.auth?.token || "",
-        host: config.gateway?.host || config.gateway?.hostname || "",
+        host: process.env.NEXT_PUBLIC_GATEWAY_CHAT_BASE_URL || config.gateway?.host || config.gateway?.hostname || "",
       },
       groupChats,
     };

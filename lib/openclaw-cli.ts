@@ -1,4 +1,4 @@
-import { exec, execFile } from "child_process";
+import { exec, execFile, execSync } from "child_process";
 import crypto from "crypto";
 import { promisify } from "util";
 
@@ -10,17 +10,36 @@ function quoteShellArg(arg: string): string {
   return `"${arg.replace(/"/g, '""')}"`;
 }
 
+const EXTRA_PATH =
+  process.platform === "win32"
+    ? "%PATH%;%APPDATA%\\npm;%LOCALAPPDATA%\\Programs\\openclaw"
+    : `${process.env.PATH || ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
+
+let _openclawPath: string | null | undefined = undefined;
+function findOpenclawPath(): string {
+  if (_openclawPath !== undefined) return _openclawPath ?? "openclaw";
+  try {
+    const cmd = process.platform === "win32" ? "where openclaw" : "which openclaw";
+    const env = { ...process.env, PATH: EXTRA_PATH };
+    _openclawPath = execSync(cmd, { encoding: "utf8", env }).trim().split("\n")[0].trim();
+  } catch {
+    _openclawPath = null;
+  }
+  return _openclawPath ?? "openclaw";
+}
+
 export async function execOpenclaw(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env, FORCE_COLOR: "0" };
+  const env = { ...process.env, FORCE_COLOR: "0", PATH: EXTRA_PATH };
+  const bin = findOpenclawPath();
 
   if (process.platform !== "win32") {
-    return execFileAsync("openclaw", args, {
+    return execFileAsync(bin, args, {
       maxBuffer: 10 * 1024 * 1024,
       env,
     });
   }
 
-  const command = `openclaw ${args.map(quoteShellArg).join(" ")}`;
+  const command = `${quoteShellArg(bin)} ${args.map(quoteShellArg).join(" ")}`;
   return execAsync(command, {
     maxBuffer: 10 * 1024 * 1024,
     env,

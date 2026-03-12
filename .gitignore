@@ -5,3 +5,5 @@ next-env.d.ts
 .idea
 .DS_Store
 /public/assets/pixel-office/*.mp3
+.env.local
+.env.*.local

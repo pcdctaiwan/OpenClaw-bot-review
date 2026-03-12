@@ -41,7 +41,8 @@ export async function POST() {
     const modelProbeTasks = new Map<string, Promise<Awaited<ReturnType<typeof probeModel>>>>();
 
     for (const agent of agentList) {
-      const modelStr = agent.model || defaultModel;
+      const rawModel: any = agent.model;
+      const modelStr = typeof rawModel === "string" ? rawModel : (rawModel?.primary || defaultModel);
       const { providerId, modelId } = parseModelRef(modelStr);
       const key = `${providerId}/${modelId}`;
       if (!modelProbeTasks.has(key)) {
@@ -58,7 +59,8 @@ export async function POST() {
     }
 
     const results = agentList.map((agent) => {
-      const modelStr = agent.model || defaultModel;
+      const rawModel: any = agent.model;
+      const modelStr = typeof rawModel === "string" ? rawModel : (rawModel?.primary || defaultModel);
       const { providerId, modelId } = parseModelRef(modelStr);
       const key = `${providerId}/${modelId}`;
       const probe = modelProbeResults.get(key);
