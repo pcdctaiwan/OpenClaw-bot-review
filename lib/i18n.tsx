@@ -261,7 +261,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "pixelOffice.sound": "音效",
     "pixelOffice.resetView": "重設視圖",
     "pixelOffice.state.working": "工作中",
-    "pixelOffice.state.idle": "摸魚中",
+    "pixelOffice.state.idle": "休息中",
     "pixelOffice.state.offline": "下班了",
     "pixelOffice.state.waiting": "等待中",
     "pixelOffice.tempWorker": "臨時工",

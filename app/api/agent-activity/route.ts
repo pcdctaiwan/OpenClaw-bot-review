@@ -9,7 +9,7 @@ export const revalidate = 0
 const SESSION_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_PARENT_SESSIONS_TO_PARSE = 40
 const ORPHAN_FALLBACK_WINDOW_MS = 15 * 60 * 1000
-const SUBAGENT_MAX_ACTIVE_MS = 30 * 60 * 1000
+const SUBAGENT_MAX_ACTIVE_MS = 10 * 60 * 1000
 const SUBAGENT_ACTIVITY_EVENT_LIMIT = 6
 const SUBAGENT_ACTIVITY_TEXT_MAX_LEN = 80
 
@@ -115,17 +115,43 @@ function pickSubagentLabel(raw: unknown): string {
 function extractCompletedSubagentLabel(text: string): string | null {
   if (!text) return null
   const patterns = [
-    /A subagent task\s+"([^"]+)"\s+just completed/i,
+    /A subagent task\s+”([^”]+)”\s+just completed/i,
     /A subagent task\s+'([^']+)'\s+just completed/i,
-    /subagent task\s+"([^"]+)"\s+.*completed/i,
+    /subagent task\s+”([^”]+)”\s+.*completed/i,
     /subagent task\s+'([^']+)'\s+.*completed/i,
-    /子任务[“"]([^”"]+)[”"].{0,12}完成/,
+    /子任务[“”]([^””]+)[“”].{0,12}完成/,
   ]
   for (const p of patterns) {
     const m = text.match(p)
     if (m?.[1]?.trim()) return m[1].trim()
   }
   return null
+}
+
+/**
+ * Extract agentId from “✅ Subagent {agentId} finished” pattern in assistant messages.
+ * e.g. “✅ Subagent agentxq finished” → “agentxq”
+ */
+function extractFinishedSubagentId(text: string): string | null {
+  if (!text) return null
+  const m = text.match(/(?:✅|☑️|✓)\s*Subagent\s+(\S+)\s+finished/i)
+  return m?.[1]?.trim() ?? null
+}
+
+/**
+ * Given a finished agentId, remove matching subtasks from activeSubtasks.
+ * Matches on childSessionKey containing “:agentId:” (e.g. “agent:agentxq:subagent:xxx”).
+ */
+function removeFinishedSubagentById(
+  agentId: string,
+  activeSubtasks: Map<string, { label: string; at: number; childSessionKey?: string }>,
+): void {
+  for (const [id, state] of activeSubtasks.entries()) {
+    if (state.childSessionKey && state.childSessionKey.includes(`:${agentId}:`)) {
+      activeSubtasks.delete(id)
+      return
+    }
+  }
 }
 
 function parseRecordTimestamp(record: unknown): number {
@@ -518,8 +544,10 @@ async function parseSubagentsFromSessionFile(
     const content = await fs.readFile(filePath, 'utf8')
     const lines = content.split('\n').filter(l => l.trim())
 
-    const activeSubtasks = new Map<string, { label: string; at: number; childSessionKey?: string }>()
+    const activeSubtasks = new Map<string, { label: string; at: number; childSessionKey?: string; acceptedAt?: number }>()
     const spawnToolIds = new Set<string>()
+    /** toolIds whose spawn was accepted and are awaiting a text response from parent */
+    const pendingResponseIds = new Set<string>()
 
     for (const line of lines) {
       try {
@@ -530,6 +558,15 @@ async function parseSubagentsFromSessionFile(
         if (record.type === 'assistant' && record.message?.content) {
           const blocks = Array.isArray(record.message.content) ? record.message.content : []
           for (const block of blocks) {
+            if (block.type === 'text' && typeof block.text === 'string') {
+              const finishedId = extractFinishedSubagentId(block.text)
+              if (finishedId) { removeFinishedSubagentById(finishedId, activeSubtasks); pendingResponseIds.clear() }
+              if (pendingResponseIds.size > 0) {
+                for (const id of pendingResponseIds) activeSubtasks.delete(id)
+                pendingResponseIds.clear()
+              }
+              continue
+            }
             if (block.type !== 'tool_use' || typeof block.id !== 'string' || !block.id) continue
             if (typeof block.name === 'string' && isSpawnTool(block.name)) {
               activeSubtasks.set(block.id, { label: pickSubagentLabel(block.input), at: eventAt })
@@ -565,6 +602,19 @@ async function parseSubagentsFromSessionFile(
           const blocks = Array.isArray(msg.content) ? msg.content : []
           if (role === 'assistant') {
             for (const block of blocks) {
+              // Check text blocks for completion signals
+              if (block?.type === 'text' && typeof block.text === 'string') {
+                // Pattern 1: "✅ Subagent {agentId} finished"
+                const finishedId = extractFinishedSubagentId(block.text)
+                if (finishedId) { removeFinishedSubagentById(finishedId, activeSubtasks); pendingResponseIds.clear() }
+                // Pattern 2: any assistant text reply clears spawns that were awaiting a response
+                // (handles custom responses like "✅ 已叫起 agentdev！", "起來了！", etc.)
+                if (pendingResponseIds.size > 0) {
+                  for (const id of pendingResponseIds) activeSubtasks.delete(id)
+                  pendingResponseIds.clear()
+                }
+                continue
+              }
               if (block?.type === 'toolCall' && typeof block.id === 'string' && block.id) {
                 if (typeof block.name === 'string' && isSpawnTool(block.name)) {
                   activeSubtasks.set(block.id, { label: pickSubagentLabel(block.arguments), at: eventAt })
@@ -581,9 +631,10 @@ async function parseSubagentsFromSessionFile(
             const toolName = typeof msg.toolName === 'string' ? msg.toolName : ''
             if (toolCallId && spawnToolIds.has(toolCallId)) {
               const childSessionKey = extractChildSessionKeyFromToolResultMessage(msg)
-              if (childSessionKey && activeSubtasks.has(toolCallId)) {
+              if (activeSubtasks.has(toolCallId)) {
                 const prev = activeSubtasks.get(toolCallId)!
-                activeSubtasks.set(toolCallId, { ...prev, childSessionKey })
+                activeSubtasks.set(toolCallId, { ...prev, childSessionKey: childSessionKey || prev.childSessionKey, acceptedAt: eventAt })
+                pendingResponseIds.add(toolCallId)
               }
               continue
             }
@@ -611,8 +662,10 @@ async function parseSubagentsFromSessionFile(
     }
 
     const now = Date.now()
+    const SPAWN_ACCEPTED_TIMEOUT_MS = 3 * 60 * 1000 // 3 min after spawn accepted — fallback
     for (const [toolId, state] of activeSubtasks.entries()) {
       if (state.at > 0 && now - state.at > SUBAGENT_MAX_ACTIVE_MS) continue
+      if (state.acceptedAt && now - state.acceptedAt > SPAWN_ACCEPTED_TIMEOUT_MS) continue
       const label = state.label
       let activityEvents: SubagentActivityEvent[] | undefined
       if (state.childSessionKey) {

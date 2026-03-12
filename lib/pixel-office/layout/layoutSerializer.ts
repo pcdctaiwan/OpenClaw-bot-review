@@ -236,16 +236,17 @@ const RIGHT_WALL_STOOLS: ReadonlyArray<PlacedFurniture> = [
   { uid: 'stool-r7', type: FurnitureType.BENCH, col: 17, row: 6 },
   { uid: 'stool-r8', type: FurnitureType.BENCH, col: 17, row: 7.5 },
 ]
-const LEFT_WALL_SERVER: Readonly<PlacedFurniture> = {
-  uid: 'server-b-left',
+const RIGHT_WALL_SERVER: Readonly<PlacedFurniture> = {
+  uid: 'server-b-right',
   type: FurnitureType.SERVER_RACK,
-  col: 1,
+  col: 18,
   row: 12,
 }
 
 function shouldRemoveRightOfficeLegacyItems(item: PlacedFurniture): boolean {
   if (item.uid.startsWith('stool-r')) return true
   if (item.uid === 'plant-r1' || item.uid === 'lamp-r' || item.uid === 'cooler-r') return true
+  if (item.uid === 'server-b-left') return true // migrated to right wall
   if (item.type === FurnitureType.PLANT && item.col === 19 && item.row === 3) return true
   if (item.type === FurnitureType.LAMP && item.col === 19 && item.row === 7) return true
   if (item.type === FurnitureType.COOLER && item.col === 18 && item.row === 7) return true
@@ -259,8 +260,8 @@ function normalizeRightOfficeFurniture(furniture: PlacedFurniture[]): PlacedFurn
     const exists = next.some((item) => item.uid === stool.uid)
     if (!exists) next.push({ ...stool })
   }
-  if (!next.some((item) => item.uid === LEFT_WALL_SERVER.uid)) {
-    next.push({ ...LEFT_WALL_SERVER })
+  if (!next.some((item) => item.uid === RIGHT_WALL_SERVER.uid)) {
+    next.push({ ...RIGHT_WALL_SERVER })
   }
   return next
 }
@@ -358,7 +359,6 @@ export function createDefaultLayout(): OfficeLayout {
     { uid: 'camera-r', type: FurnitureType.CAMERA, col: 13.5, row: 3.5 },
     { uid: 'whiteboard-r', type: FurnitureType.WHITEBOARD, col: 15, row: 0 },
     { uid: 'library-r', type: FurnitureType.LIBRARY_GRAY_FULL, col: 17.5, row: -0.5 },
-    { uid: 'clock-r', type: FurnitureType.CLOCK, col: 11, row: 0 },
     ...RIGHT_WALL_STOOLS,
 
     // ── Right room meeting corner ──
@@ -366,13 +366,15 @@ export function createDefaultLayout(): OfficeLayout {
 
     // ── Bottom lounge / break area ──
     { uid: 'fridge-b', type: FurnitureType.FRIDGE, col: 1, row: 9.5 },
-    { ...LEFT_WALL_SERVER },
+    { ...RIGHT_WALL_SERVER },
     { uid: 'water-cooler-b', type: FurnitureType.WATER_COOLER, col: 8, row: 9.5 },
     { uid: 'deco-b', type: FurnitureType.DECO_3, col: 9, row: 9.5 },
     { uid: 'plant-b1', type: FurnitureType.PLANT, col: 1, row: 15 },
     { uid: 'plant-b2', type: FurnitureType.PLANT_SMALL, col: 19, row: 15 },
     { uid: 'plant-b3', type: FurnitureType.PLANT_SMALL, col: 19, row: 10.5 },
-    { uid: 'painting-l2', type: FurnitureType.PAINTING_LARGE_2, col: 11, row: 10 },
+    { uid: 'painting-corridor-l', type: FurnitureType.PAINTING_SMALL_1, col: 3, row: 9 },
+    { uid: 'clock-corridor', type: FurnitureType.CLOCK, col: 11, row: 9 },
+    { uid: 'painting-corridor-r', type: FurnitureType.PAINTING_LARGE_2, col: 12, row: 9 },
     { uid: 'bookshelf-b', type: FurnitureType.BOOKSHELF, col: 18, row: 9.5 },
     { uid: 'sofa-b', type: FurnitureType.SOFA, col: 10, row: 14, rotation: 180 },
     { uid: 'bench-b1', type: FurnitureType.BENCH, col: 8, row: 15 },

@@ -474,14 +474,15 @@ export function Sidebar() {
                 🦞
               </span>
               <div className="min-w-0">
-                <div className="text-xs font-bold tracking-wide truncate">
-                  OPENCLAW{mobileOpenclawVersion ? ` ${mobileOpenclawVersion}` : ""}
-                </div>
+                <div className="text-xs font-bold tracking-wide truncate">OPENCLAW</div>
                 <div className="text-[10px] text-[var(--text-muted)] truncate">
                   {pathname === "/" && mobileAgentCount !== null
                     ? `${mobileAgentCount} ${t("home.agentCount")}`
                     : mobileCurrent ? t(mobileCurrent.labelKey) : "BOT DASHBOARD"}
                 </div>
+                {mobileOpenclawVersion && (
+                  <div className="text-[9px] text-[var(--text-muted)] opacity-60 truncate">v{mobileOpenclawVersion}</div>
+                )}
               </div>
             </Link>
             <div className="flex items-center gap-1">
