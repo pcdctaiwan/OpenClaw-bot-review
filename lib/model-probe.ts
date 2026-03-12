@@ -65,7 +65,11 @@ function quoteShellArg(arg: string): string {
 }
 
 async function execOpenclaw(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env, FORCE_COLOR: "0" };
+  const env = {
+    ...process.env,
+    FORCE_COLOR: "0",
+    PATH: `${process.env.PATH || ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+  };
 
   if (process.platform !== "win32") {
     return execFileAsync("openclaw", args, {
@@ -250,6 +254,32 @@ async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeRe
         source: "direct_model_probe",
         precision: "model",
       };
+    }
+  }
+
+  if (providerCfg.api === "ollama") {
+    const url = `${providerCfg.baseUrl.replace(/\/+$/, "")}/v1/chat/completions`;
+    const body = {
+      model: params.modelId,
+      messages: [{ role: "user", content: "Reply with OK." }],
+      max_tokens: 8,
+      temperature: 0,
+    };
+    const start = Date.now();
+    try {
+      const resp = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(body) }, timeoutMs);
+      const elapsed = Date.now() - start;
+      if (resp.ok) {
+        return { ok: true, elapsed, status: "ok", mode: "api_key", source: "direct_model_probe", precision: "model", text: "OK (direct model probe)" };
+      }
+      let payload: any = null;
+      try { payload = await resp.json(); } catch {}
+      const error = extractErrorMessage(payload, `HTTP ${resp.status}`);
+      return { ok: false, elapsed, status: classifyErrorStatus(resp.status, error), error, mode: "api_key", source: "direct_model_probe", precision: "model" };
+    } catch (err: any) {
+      const elapsed = Date.now() - start;
+      const isTimeout = err?.name === "AbortError";
+      return { ok: false, elapsed, status: isTimeout ? "timeout" : "network", error: isTimeout ? "LLM request timed out." : (err?.message || "Network error"), mode: "api_key", source: "direct_model_probe", precision: "model" };
     }
   }
 
