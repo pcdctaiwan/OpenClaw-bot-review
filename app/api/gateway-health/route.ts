@@ -17,7 +17,11 @@ function quoteShellArg(arg: string): string {
 }
 
 async function execOpenclaw(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env, FORCE_COLOR: "0" };
+  const env = {
+    ...process.env,
+    FORCE_COLOR: "0",
+    PATH: `${process.env.PATH || ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+  };
 
   if (process.platform !== "win32") {
     return execFileAsync("openclaw", args, {
