@@ -1,4 +1,5 @@
 import { CharacterState, Direction, TILE_SIZE } from '../types'
+import { matrixEffectSeeds } from './matrixEffect'
 import type { Character, Seat, SpriteData, TileType as TileTypeVal } from '../types'
 import type { CharacterSprites } from '../sprites/spriteData'
 import { findPath } from '../layout/tileMap'
@@ -89,6 +90,7 @@ export function createCharacter(
     seatTimer: 0,
     isSubagent: false,
     parentAgentId: null,
+    greetLocked: false,
     label: '',
     matrixEffect: null,
     matrixEffectTimer: 0,
@@ -145,6 +147,27 @@ export function updateCharacter(
     }
 
     case CharacterState.IDLE: {
+      // Under greeting control — stay frozen
+      if (ch.greetLocked) break
+      // Pending walk-back before despawn — start walking immediately
+      if (ch.pendingDespawn && ch.pendingDespawn !== true) {
+        const target = ch.pendingDespawn
+        const path = findPath(ch.tileCol, ch.tileRow, target.col, target.row, tileMap, blockedTiles)
+        if (path.length > 0) {
+          ch.path = path
+          ch.moveProgress = 0
+          ch.state = CharacterState.WALK
+          ch.frame = 0
+          ch.frameTimer = 0
+        } else {
+          // Can't reach target — despawn in place
+          ch.pendingDespawn = undefined
+          ch.matrixEffect = 'despawn'
+          ch.matrixEffectTimer = 0
+          ch.matrixEffectSeeds = matrixEffectSeeds()
+        }
+        break
+      }
       // No idle animation — static pose
       ch.frame = 0
       if (ch.seatTimer < 0) ch.seatTimer = 0 // clear turn-end sentinel
@@ -240,6 +263,19 @@ export function updateCharacter(
         ch.x = center.x
         ch.y = center.y
 
+        // Temp worker returning to seat before exit — despawn on arrival
+        if (ch.pendingDespawn) {
+          const target = ch.pendingDespawn === true ? null : ch.pendingDespawn
+          const arrived = !target || (ch.tileCol === target.col && ch.tileRow === target.row)
+          if (arrived) {
+            ch.pendingDespawn = undefined
+            ch.matrixEffect = 'despawn'
+            ch.matrixEffectTimer = 0
+            ch.matrixEffectSeeds = matrixEffectSeeds()
+            break
+          }
+        }
+
         if (ch.isActive) {
           if (!ch.seatId) {
             // No seat — type in place
@@ -330,8 +366,8 @@ export function updateCharacter(
         ch.moveProgress = 0
       }
 
-      // If became active while wandering, repath to seat
-      if (ch.isActive && ch.seatId) {
+      // If became active while wandering, repath to seat (skip if under greeting control)
+      if (ch.isActive && ch.seatId && !ch.greetLocked) {
         const seat = seats.get(ch.seatId)
         if (seat) {
           const lastStep = ch.path[ch.path.length - 1]

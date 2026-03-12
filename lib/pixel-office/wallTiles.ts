@@ -113,7 +113,7 @@ export function getWallInstances(
         sprite: wallInfo.sprite,
         x: c * TILE_SIZE,
         y: r * TILE_SIZE + wallInfo.offsetY,
-        zY: (r + 1) * TILE_SIZE,
+        zY: r * TILE_SIZE,
       })
     }
   }
