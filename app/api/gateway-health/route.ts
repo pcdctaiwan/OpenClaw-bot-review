@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import path from "path";
-import { exec, execFile } from "child_process";
+import { exec, execFile, execSync } from "child_process";
 import { promisify } from "util";
 import { readJsonFileSync } from "@/lib/json";
 import { OPENCLAW_CONFIG_PATH } from "@/lib/openclaw-paths";
@@ -16,11 +16,30 @@ function quoteShellArg(arg: string): string {
   return `"${arg.replace(/"/g, '""')}"`;
 }
 
+const EXTRA_PATH =
+  process.platform === "win32"
+    ? "%PATH%;%APPDATA%\\npm;%LOCALAPPDATA%\\Programs\\openclaw"
+    : `${process.env.PATH || ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
+
+let _openclawPath: string | null | undefined = undefined;
+function findOpenclawPath(): string {
+  if (_openclawPath !== undefined) return _openclawPath ?? "openclaw";
+  try {
+    const cmd = process.platform === "win32" ? "where openclaw" : "which openclaw";
+    const env = { ...process.env, PATH: EXTRA_PATH };
+    _openclawPath = execSync(cmd, { encoding: "utf8", env }).trim().split("\n")[0].trim();
+  } catch {
+    _openclawPath = null;
+  }
+  return _openclawPath ?? "openclaw";
+}
+
 async function execOpenclaw(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env, FORCE_COLOR: "0" };
+  const env = { ...process.env, FORCE_COLOR: "0", PATH: EXTRA_PATH };
+  const bin = findOpenclawPath();
 
   if (process.platform !== "win32") {
-    return execFileAsync("openclaw", args, {
+    return execFileAsync(bin, args, {
       maxBuffer: 10 * 1024 * 1024,
       env,
     });

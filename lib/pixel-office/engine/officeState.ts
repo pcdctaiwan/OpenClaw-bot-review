@@ -13,6 +13,7 @@ import {
   CHARACTER_HIT_HEIGHT,
 } from '../constants'
 import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout, PlacedFurniture } from '../types'
+import { FurnitureType } from '../types'
 import { createCharacter, updateCharacter } from './characters'
 import { CHARACTER_PALETTES, getAvailableCharacterVariantCount } from '../sprites/spriteData'
 import { matrixEffectSeeds } from './matrixEffect'
@@ -86,7 +87,7 @@ const SRE_BLACKWORDS_ZH_TW = [
   '先查日誌紀錄',
   '先重現',
   '限流先開',
-  '還好',
+  '檢查gateway',
   '降載執行',
   '先做降級',
   '先擴容',
@@ -368,12 +369,11 @@ const GATEWAY_SRE_LABEL = '值班SRE'
 const GATEWAY_SRE_STANDBY_COL = 2
 const GATEWAY_SRE_STANDBY_ROW = 14
 const GATEWAY_SRE_RESCUE_CANDIDATES = [
-  // Break-area server sits at left wall (around col 1~2, row 12~13).
-  // "Front of server" means the lower edge of the rack in this top-down view.
-  { col: 2, row: 14 },
-  { col: 1, row: 14 },
-  { col: 3, row: 13 },
-  { col: 3, row: 12 },
+  // Rescue point: right wall of lounge area.
+  { col: 18, row: 14 },
+  { col: 18, row: 13 },
+  { col: 17, row: 14 },
+  { col: 17, row: 13 },
 ] as const
 
 export type GatewaySreState = 'unknown' | 'healthy' | 'degraded' | 'down'
@@ -384,6 +384,19 @@ export interface GatewaySreInfo {
   error: string | null
   responseMs: number | null
   checkedAt: number | null
+}
+
+interface GreetingSequence {
+  childId: number
+  parentId: number
+  childTarget: { col: number; row: number } | null
+  /** Tile to wait at when MainAgent is busy with another greeter */
+  waitTarget: { col: number; row: number } | null
+  phase: 'waiting' | 'walk' | 'pause' | 'parent_smile' | 'child_smile' | 'final_pause' | 'complete'
+  timer: number
+  isExit: boolean
+  /** Tile to walk back to after farewell, before despawning */
+  exitReturnPos: { col: number; row: number } | null
 }
 
 export class OfficeState {
@@ -417,6 +430,17 @@ export class OfficeState {
   private gatewaySreResponseMs: number | null = null
   private gatewaySreCheckedAt: number | null = null
   private locale: OfficeLocale = 'zh-TW'
+  private activeGreetings: Map<number, GreetingSequence> = new Map()
+  /** The first regular agent added — all other agents greet this one on entry */
+  private mainAgentId: number | null = null
+  /** FIFO queue of agent IDs waiting to greet MainAgent. Only queue head walks over; others stay at seat. */
+  private greetQueue: number[] = []
+  /** Subagents lingering at seat before farewell. key=charId, value=remaining seconds */
+  private lingerSubagents: Map<number, number> = new Map()
+  /** Subagent IDs queued for farewell — when processGreetQueue starts their greeting, mark isExit=true */
+  private exitOnGreetComplete: Set<number> = new Set()
+  /** Stashed exit return positions for subagents waiting in greetQueue. Cleared when greeting starts. */
+  private exitReturnStash: Map<number, { col: number; row: number }> = new Map()
 
   getTempWorkerLabel(): string {
     return getTempWorkerLabel(this.locale)
@@ -709,6 +733,13 @@ export class OfficeState {
       ch.matrixEffectSeeds = matrixEffectSeeds()
     }
     this.characters.set(id, ch)
+
+    // Track first agent as MainAgent; others greet on entry
+    if (this.mainAgentId === null) {
+      this.mainAgentId = id
+    } else if (spawnAtDoor) {
+      this.tryStartGreeting(ch)
+    }
   }
 
   /** Spawn the office cat at a random walkable tile */
@@ -848,6 +879,245 @@ export class OfficeState {
     }
   }
 
+  /** Find a walkable tile adjacent to a character */
+  private findAdjacentWalkable(ch: Character): { col: number; row: number } | null {
+    const adjacents = [
+      { col: ch.tileCol - 1, row: ch.tileRow },
+      { col: ch.tileCol + 1, row: ch.tileRow },
+      { col: ch.tileCol, row: ch.tileRow - 1 },
+      { col: ch.tileCol, row: ch.tileRow + 1 },
+    ]
+    for (const t of adjacents) {
+      if (isWalkable(t.col, t.row, this.tileMap, this.blockedTiles)) return t
+    }
+    return null
+  }
+
+  /** Returns true if MainAgent is currently in an active greeting sequence */
+  private isMainAgentBusy(): boolean {
+    if (this.mainAgentId === null) return false
+    for (const g of this.activeGreetings.values()) {
+      if (g.parentId === this.mainAgentId) return true
+    }
+    return false
+  }
+
+  /**
+   * Queue `ch` to greet MainAgent. If MainAgent is free and queue is empty,
+   * starts the greeting immediately. Otherwise, adds to FIFO queue and the agent
+   * stays at their seat until it's their turn.
+   * No-op if: ch IS MainAgent, already in queue/greeting, MainAgent not found.
+   */
+  private tryStartGreeting(ch: Character): void {
+    if (this.mainAgentId === null || ch.id === this.mainAgentId || ch.isSystemRole) return
+    if (this.activeGreetings.has(ch.id)) return
+    if (this.greetQueue.includes(ch.id)) return
+    const mainCh = this.characters.get(this.mainAgentId)
+    if (!mainCh || mainCh.matrixEffect === 'despawn') return
+
+    this.greetQueue.push(ch.id)
+    this.processGreetQueue()
+  }
+
+  /** Dequeue the next agent and start their greeting walk if MainAgent is free. */
+  private processGreetQueue(): void {
+    if (this.isMainAgentBusy()) return
+    // Find first queued agent that still exists and isn't already greeting
+    while (this.greetQueue.length > 0) {
+      const nextId = this.greetQueue[0]
+      const ch = this.characters.get(nextId)
+      if (!ch || this.activeGreetings.has(nextId)) {
+        this.greetQueue.shift()
+        continue
+      }
+      const mainCh = this.characters.get(this.mainAgentId!)
+      if (!mainCh || mainCh.matrixEffect === 'despawn') {
+        this.greetQueue.length = 0
+        return
+      }
+      const greetTile = this.findAdjacentWalkable(mainCh)
+      if (!greetTile) { this.greetQueue.shift(); continue }
+      const greetPath = findPath(ch.tileCol, ch.tileRow, greetTile.col, greetTile.row, this.tileMap, this.blockedTiles)
+      if (greetPath.length === 0) { this.greetQueue.shift(); continue }
+      this.greetQueue.shift()
+      ch.path = greetPath
+      ch.state = CharacterState.WALK
+      ch.moveProgress = 0
+      ch.greetLocked = true
+      const isExitGreeting = this.exitOnGreetComplete.has(ch.id)
+      if (isExitGreeting) this.exitOnGreetComplete.delete(ch.id)
+      // Recover the stashed return position for this exit greeting
+      const exitReturnPos = isExitGreeting ? (this.exitReturnStash.get(ch.id) ?? null) : null
+      if (isExitGreeting) this.exitReturnStash.delete(ch.id)
+      this.activeGreetings.set(ch.id, {
+        childId: ch.id,
+        parentId: this.mainAgentId!,
+        childTarget: greetTile,
+        waitTarget: null,
+        phase: 'walk',
+        timer: 0,
+        isExit: isExitGreeting,
+        exitReturnPos,
+      })
+      return
+    }
+  }
+
+  /** Approximate facing direction from one tile toward another */
+  private directionToward(fromCol: number, fromRow: number, toCol: number, toRow: number): Direction {
+    const dc = toCol - fromCol
+    const dr = toRow - fromRow
+    if (Math.abs(dc) >= Math.abs(dr)) return dc >= 0 ? Direction.RIGHT : Direction.LEFT
+    return dr >= 0 ? Direction.DOWN : Direction.UP
+  }
+
+  private updateGreetings(dt: number): void {
+    const completed: number[] = []
+
+    for (const [childId, seq] of this.activeGreetings) {
+      const child = this.characters.get(childId)
+      const parent = this.characters.get(seq.parentId)
+
+      if (!child || child.matrixEffect === 'despawn') {
+        completed.push(childId)
+        if (parent) parent.greetLocked = false
+        continue
+      }
+
+      switch (seq.phase) {
+        case 'walk': {
+          const target = seq.childTarget
+          if (!target) { seq.phase = 'complete'; break }
+
+          // Detected arrival: child tile matches target
+          if (child.tileCol === target.col && child.tileRow === target.row) {
+            // Override any FSM re-path
+            child.path = []
+            child.state = CharacterState.IDLE
+            child.greetLocked = true
+            if (parent) {
+              parent.greetLocked = true
+              parent.path = []
+              parent.state = CharacterState.IDLE
+              child.dir = this.directionToward(child.tileCol, child.tileRow, parent.tileCol, parent.tileRow)
+              parent.dir = this.directionToward(parent.tileCol, parent.tileRow, child.tileCol, child.tileRow)
+            }
+            seq.phase = 'pause'
+            seq.timer = 1.0
+          } else if (child.path.length === 0 && child.state !== CharacterState.WALK) {
+            // Lost path mid-walk — try to re-path to target
+            const path = findPath(child.tileCol, child.tileRow, target.col, target.row, this.tileMap, this.blockedTiles)
+            if (path.length > 0) {
+              child.path = path
+              child.state = CharacterState.WALK
+              child.moveProgress = 0
+            } else {
+              // Can't reach — complete without greeting
+              seq.phase = 'complete'
+            }
+          }
+          break
+        }
+
+        case 'pause': {
+          child.path = []
+          child.state = CharacterState.IDLE
+          if (parent) {
+            parent.path = []
+            parent.state = CharacterState.IDLE
+            child.dir = this.directionToward(child.tileCol, child.tileRow, parent.tileCol, parent.tileRow)
+            parent.dir = this.directionToward(parent.tileCol, parent.tileRow, child.tileCol, child.tileRow)
+          }
+          seq.timer -= dt
+          if (seq.timer <= 0) {
+            const emoji = seq.isExit ? '❤️' : '😊'
+            if (parent) this.pushCodeSnippet(parent.id, emoji)
+            seq.phase = 'parent_smile'
+            seq.timer = 1.0
+          }
+          break
+        }
+
+        case 'parent_smile': {
+          child.path = []
+          child.state = CharacterState.IDLE
+          if (parent) { parent.path = []; parent.state = CharacterState.IDLE }
+          seq.timer -= dt
+          if (seq.timer <= 0) {
+            this.pushCodeSnippet(child.id, seq.isExit ? '❤️' : '😊')
+            seq.phase = 'child_smile'
+            seq.timer = 1.0
+          }
+          break
+        }
+
+        case 'child_smile': {
+          child.path = []
+          child.state = CharacterState.IDLE
+          if (parent) { parent.path = []; parent.state = CharacterState.IDLE }
+          seq.timer -= dt
+          if (seq.timer <= 0) {
+            seq.phase = 'final_pause'
+            seq.timer = 1.0
+          }
+          break
+        }
+
+        case 'final_pause': {
+          child.path = []
+          child.state = CharacterState.IDLE
+          if (parent) { parent.path = []; parent.state = CharacterState.IDLE }
+          seq.timer -= dt
+          if (seq.timer <= 0) {
+            seq.phase = 'complete'
+          }
+          break
+        }
+
+        case 'complete': {
+          child.greetLocked = false
+          if (parent) parent.greetLocked = false
+
+          if (seq.isExit) {
+            child.bubbleType = null
+            const walkBack = this.findExitWalkPath(child, seq.exitReturnPos)
+            if (walkBack) {
+              child.path = walkBack.path
+              child.state = CharacterState.WALK
+              child.moveProgress = 0
+              child.pendingDespawn = walkBack.target
+            } else {
+              child.matrixEffect = 'despawn'
+              child.matrixEffectTimer = 0
+              child.matrixEffectSeeds = matrixEffectSeeds()
+            }
+          } else {
+            // Walk to assigned seat
+            if (child.seatId) {
+              const seat = this.seats.get(child.seatId)
+              if (seat) {
+                const path = this.withOwnSeatUnblocked(child, () =>
+                  findPath(child.tileCol, child.tileRow, Math.round(seat.seatCol), Math.round(seat.seatRow), this.tileMap, this.blockedTiles)
+                )
+                if (path.length > 0) {
+                  child.path = path
+                  child.state = CharacterState.WALK
+                  child.moveProgress = 0
+                }
+              }
+            }
+          }
+          completed.push(childId)
+          break
+        }
+      }
+    }
+
+    for (const id of completed) this.activeGreetings.delete(id)
+    // After any greeting completes, let the next queued agent proceed
+    if (completed.length > 0) this.processGreetQueue()
+  }
+
   private findClosestWalkable(targetCol: number, targetRow: number): { col: number; row: number } {
     if (this.walkableTiles.length === 0) return { col: 1, row: 1 }
     let best = this.walkableTiles[0]
@@ -861,6 +1131,69 @@ export class OfficeState {
       }
     }
     return best
+  }
+
+  /** Find a walkable tile near the sofa/lounge area, for temp workers with no assigned seat */
+  private findSofaAreaTile(): { col: number; row: number } | null {
+    const sofa = this.layout.furniture.find(
+      (f) => f.type === FurnitureType.SOFA || f.type === FurnitureType.BENCH,
+    )
+    if (!sofa) return null
+    return this.findClosestWalkable(sofa.col, sofa.row)
+  }
+
+  /**
+   * Find a walk-back path for a departing temp worker.
+   * Ensures the path is long enough that the worker visibly walks away from MainAgent.
+   * Falls back to the sofa area or any distant tile if the primary target is unreachable.
+   */
+  private findExitWalkPath(
+    child: Character,
+    preferredTarget: { col: number; row: number } | null,
+  ): { path: Array<{ col: number; row: number }>; target: { col: number; row: number } } | null {
+    const MIN_WALK_TILES = 5 // must walk at least this many steps
+
+    const tryTarget = (target: { col: number; row: number }) => {
+      if (target.col === child.tileCol && target.row === child.tileRow) return null
+      const path = findPath(child.tileCol, child.tileRow, target.col, target.row, this.tileMap, this.blockedTiles)
+      if (path.length >= MIN_WALK_TILES) return { path, target }
+      return null
+    }
+
+    // 1. Try preferred target (seat area)
+    if (preferredTarget) {
+      const result = tryTarget(preferredTarget)
+      if (result) return result
+    }
+
+    // 2. Try sofa area
+    const sofaTile = this.findSofaAreaTile()
+    if (sofaTile) {
+      const result = tryTarget(sofaTile)
+      if (result) return result
+    }
+
+    // 3. Find any walkable tile sufficiently far from current position
+    const { tileCol: cx, tileRow: cy } = child
+    const farTile = this.walkableTiles
+      .filter((t) => Math.abs(t.col - child.tileCol) + Math.abs(t.row - child.tileRow) >= MIN_WALK_TILES)
+      .sort((a, b) => {
+        // Prefer tiles far from child but in direction away from center of map
+        const da = Math.abs(a.col - cx) + Math.abs(a.row - cy)
+        const db = Math.abs(b.col - cx) + Math.abs(b.row - cy)
+        return db - da
+      })
+      .find((t) => {
+        const path = findPath(child.tileCol, child.tileRow, t.col, t.row, this.tileMap, this.blockedTiles)
+        return path.length >= MIN_WALK_TILES
+      })
+
+    if (farTile) {
+      const path = findPath(child.tileCol, child.tileRow, farTile.col, farTile.row, this.tileMap, this.blockedTiles)
+      return { path, target: farTile }
+    }
+
+    return null
   }
 
   private getGatewaySrePatrolTiles(): Array<{ col: number; row: number }> {
@@ -881,7 +1214,7 @@ export class OfficeState {
         return { col: candidate.col, row: candidate.row }
       }
     }
-    return this.findClosestWalkable(2, 14)
+    return this.findClosestWalkable(18, 14)
   }
 
   private getGatewaySreDegradedTiles(
@@ -1275,6 +1608,9 @@ export class OfficeState {
     ch.matrixEffectSeeds = matrixEffectSeeds()
     this.characters.set(id, ch)
 
+    // Join MainAgent greeting queue (waits in place if MainAgent is busy)
+    this.tryStartGreeting(ch)
+
     this.subagentIdMap.set(key, id)
     this.subagentMeta.set(id, { parentAgentId, parentToolId })
     return id
@@ -1289,26 +1625,73 @@ export class OfficeState {
     const ch = this.characters.get(id)
     if (ch) {
       if (ch.matrixEffect === 'despawn') {
-        // Already despawning — just clean up maps
         this.subagentIdMap.delete(key)
         this.subagentMeta.delete(id)
+        this.lingerSubagents.delete(id)
         return
       }
-      if (ch.seatId) {
-        const seat = this.seats.get(ch.seatId)
-        if (seat) seat.assigned = false
-      }
-      // Start despawn animation — keep character in map for rendering
-      ch.matrixEffect = 'despawn'
-      ch.matrixEffectTimer = 0
-      ch.matrixEffectSeeds = matrixEffectSeeds()
-      ch.bubbleType = null
+      // If already lingering, do nothing — let the timer run
+      if (this.lingerSubagents.has(id)) return
+      // Start linger: stay at seat for 60s, then do farewell
+      this.lingerSubagents.set(id, 60)
+      this.subagentIdMap.delete(key)
+      this.subagentMeta.delete(id)
+      if (this.selectedAgentId === id) this.selectedAgentId = null
+      if (this.cameraFollowId === id) this.cameraFollowId = null
+      return
     }
-    // Clean up tracking maps immediately so keys don't collide
     this.subagentIdMap.delete(key)
     this.subagentMeta.delete(id)
-    if (this.selectedAgentId === id) this.selectedAgentId = null
-    if (this.cameraFollowId === id) this.cameraFollowId = null
+  }
+
+  /** Internal: execute the actual farewell sequence for a subagent (called after linger) */
+  private startSubagentFarewell(id: number): void {
+    const ch = this.characters.get(id)
+    if (!ch || ch.matrixEffect === 'despawn') {
+      this.characters.delete(id)
+      return
+    }
+    // Save a walkable return position before freeing seat.
+    // Seat tile itself is often blocked by chair furniture, so use nearest walkable floor tile.
+    let exitReturnPos: { col: number; row: number } | null = null
+    if (ch.seatId) {
+      const seat = this.seats.get(ch.seatId)
+      if (seat) {
+        exitReturnPos = this.findClosestWalkable(Math.round(seat.seatCol), Math.round(seat.seatRow))
+        seat.assigned = false
+      }
+      ch.seatId = null
+    }
+    // No seat — fall back to sofa/lounge area
+    if (!exitReturnPos) exitReturnPos = this.findSofaAreaTile()
+
+    ch.bubbleType = null
+    // Queue farewell greeting with MainAgent (isExit=true marks it as a departure)
+    this.tryStartGreeting(ch)
+    if (this.activeGreetings.has(id)) {
+      // Already started greeting immediately — mark as exit
+      const seq = this.activeGreetings.get(id)!
+      seq.isExit = true
+      seq.exitReturnPos = exitReturnPos
+    } else if (this.greetQueue.includes(id)) {
+      // In queue — when processed, processGreetQueue will set isExit=true
+      this.exitOnGreetComplete.add(id)
+      // Stash the return position until the greeting actually starts
+      if (exitReturnPos) this.exitReturnStash.set(id, exitReturnPos)
+    } else {
+      // No MainAgent reachable — walk back directly then despawn
+      const walkBack = this.findExitWalkPath(ch, exitReturnPos)
+      if (walkBack) {
+        ch.pendingDespawn = walkBack.target
+        ch.path = walkBack.path
+        ch.state = CharacterState.WALK
+        ch.moveProgress = 0
+      } else {
+        ch.matrixEffect = 'despawn'
+        ch.matrixEffectTimer = 0
+        ch.matrixEffectSeeds = matrixEffectSeeds()
+      }
+    }
   }
 
   /** Remove all sub-agents belonging to a parent agent */
@@ -1320,20 +1703,58 @@ export class OfficeState {
         const ch = this.characters.get(id)
         if (ch) {
           if (ch.matrixEffect === 'despawn') {
-            // Already despawning — just clean up maps
             this.subagentMeta.delete(id)
+            toRemove.push(key)
+            continue
+          }
+          if (this.activeGreetings.has(id)) {
+            const seq = this.activeGreetings.get(id)!
+            seq.isExit = true
+            if (ch.seatId) {
+              const seat = this.seats.get(ch.seatId)
+              if (seat) seat.assigned = false
+              ch.seatId = null
+            }
+            this.subagentMeta.delete(id)
+            if (this.selectedAgentId === id) this.selectedAgentId = null
+            if (this.cameraFollowId === id) this.cameraFollowId = null
             toRemove.push(key)
             continue
           }
           if (ch.seatId) {
             const seat = this.seats.get(ch.seatId)
             if (seat) seat.assigned = false
+            ch.seatId = null
           }
-          // Start despawn animation
+          ch.bubbleType = null
+          const parentCh = this.characters.get(parentAgentId)
+          const greetTile = parentCh ? this.findAdjacentWalkable(parentCh) : null
+          if (greetTile && parentCh) {
+            const path = findPath(ch.tileCol, ch.tileRow, greetTile.col, greetTile.row, this.tileMap, this.blockedTiles)
+            if (path.length > 0) {
+              ch.path = path
+              ch.state = CharacterState.WALK
+              ch.moveProgress = 0
+              this.activeGreetings.set(id, {
+                childId: id,
+                parentId: parentAgentId,
+                childTarget: greetTile,
+                waitTarget: null,
+                phase: 'walk',
+                timer: 0,
+                isExit: true,
+                exitReturnPos: ch.pendingDespawn && ch.pendingDespawn !== true ? ch.pendingDespawn : null,
+              })
+              this.subagentMeta.delete(id)
+              if (this.selectedAgentId === id) this.selectedAgentId = null
+              if (this.cameraFollowId === id) this.cameraFollowId = null
+              toRemove.push(key)
+              continue
+            }
+          }
           ch.matrixEffect = 'despawn'
           ch.matrixEffectTimer = 0
           ch.matrixEffectSeeds = matrixEffectSeeds()
-          ch.bubbleType = null
         }
         this.subagentMeta.delete(id)
         if (this.selectedAgentId === id) this.selectedAgentId = null
@@ -1362,6 +1783,10 @@ export class OfficeState {
         ch.seatTimer = -1
         ch.path = []
         ch.moveProgress = 0
+      }
+      // Greet MainAgent on start-work and stop-work transitions
+      if (!ch.isSubagent && !ch.isSystemRole) {
+        this.tryStartGreeting(ch)
       }
       this.rebuildFurnitureInstances()
     }
@@ -1516,10 +1941,11 @@ export class OfficeState {
         continue
       }
 
-      if (ch.systemRoleType === 'gateway_sre') {
+      if (ch.systemRoleType === 'gateway_sre' && !ch.greetLocked) {
         this.updateGatewaySreCharacter(ch, dt)
       } else {
         // Temporarily unblock own seat so character can pathfind to it
+        // (greetLocked guards inside updateCharacter prevent repath-to-seat during greeting)
         this.withOwnSeatUnblocked(ch, () =>
           updateCharacter(ch, dt, this.walkableTiles, this.seats, this.tileMap, this.blockedTiles, this.interactionPoints)
         )
@@ -1604,6 +2030,32 @@ export class OfficeState {
         }
       }
     }
+    // Tick linger timers — only count down while character is actually sitting at seat
+    if (this.lingerSubagents.size > 0) {
+      const lingerExpired: number[] = []
+      for (const [lingerId, timer] of this.lingerSubagents) {
+        const ch = this.characters.get(lingerId)
+        if (!ch) { lingerExpired.push(lingerId); continue }
+        // Only count down while character is idle/typing at their seat (not walking or greeting)
+        const isRestingAtSeat =
+          ch.seatId !== null &&
+          ch.state !== CharacterState.WALK &&
+          !this.activeGreetings.has(lingerId) &&
+          !this.greetQueue.includes(lingerId)
+        if (!isRestingAtSeat) continue
+        const remaining = timer - dt
+        if (remaining <= 0) {
+          lingerExpired.push(lingerId)
+        } else {
+          this.lingerSubagents.set(lingerId, remaining)
+        }
+      }
+      for (const lingerId of lingerExpired) {
+        this.lingerSubagents.delete(lingerId)
+        this.startSubagentFarewell(lingerId)
+      }
+    }
+    this.updateGreetings(dt)
     // Remove characters that finished despawn
     for (const id of toDelete) {
       this.characters.delete(id)

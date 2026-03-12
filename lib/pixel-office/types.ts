@@ -196,6 +196,7 @@ export interface Character {
   seatTimer: number
   isSubagent: boolean
   parentAgentId: number | null
+  greetLocked: boolean
   label: string
   matrixEffect: 'spawn' | 'despawn' | null
   matrixEffectTimer: number
@@ -211,4 +212,6 @@ export interface Character {
   isSystemRole?: boolean
   systemRoleType?: 'gateway_sre'
   systemStatus?: 'unknown' | 'healthy' | 'degraded' | 'down'
+  /** Walk back to this tile after farewell greeting, then despawn */
+  pendingDespawn?: { col: number; row: number } | true
 }

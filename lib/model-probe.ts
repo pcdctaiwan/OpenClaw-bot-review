@@ -1,5 +1,5 @@
 import path from "path";
-import { exec, execFile } from "child_process";
+import { exec, execFile, execSync } from "child_process";
 import { promisify } from "util";
 import { readJsonFileSync } from "@/lib/json";
 import { OPENCLAW_HOME } from "@/lib/openclaw-paths";
@@ -64,17 +64,36 @@ function quoteShellArg(arg: string): string {
   return `"${arg.replace(/"/g, '""')}"`;
 }
 
+const EXTRA_PATH =
+  process.platform === "win32"
+    ? "%PATH%;%APPDATA%\\npm;%LOCALAPPDATA%\\Programs\\openclaw"
+    : `${process.env.PATH || ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
+
+let _openclawPath: string | null | undefined = undefined;
+function findOpenclawPath(): string {
+  if (_openclawPath !== undefined) return _openclawPath ?? "openclaw";
+  try {
+    const cmd = process.platform === "win32" ? "where openclaw" : "which openclaw";
+    const env = { ...process.env, PATH: EXTRA_PATH };
+    _openclawPath = execSync(cmd, { encoding: "utf8", env }).trim().split("\n")[0].trim();
+  } catch {
+    _openclawPath = null;
+  }
+  return _openclawPath ?? "openclaw";
+}
+
 async function execOpenclaw(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env, FORCE_COLOR: "0" };
+  const env = { ...process.env, FORCE_COLOR: "0", PATH: EXTRA_PATH };
+  const bin = findOpenclawPath();
 
   if (process.platform !== "win32") {
-    return execFileAsync("openclaw", args, {
+    return execFileAsync(bin, args, {
       maxBuffer: 10 * 1024 * 1024,
       env,
     });
   }
 
-  const command = `openclaw ${args.map(quoteShellArg).join(" ")}`;
+  const command = `${quoteShellArg(bin)} ${args.map(quoteShellArg).join(" ")}`;
   return execAsync(command, {
     maxBuffer: 10 * 1024 * 1024,
     env,
@@ -189,7 +208,8 @@ function extractErrorMessage(payload: any, fallback: string): string {
 
 async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeResult | null> {
   const providerCfg = loadProviderConfig(params.providerId);
-  if (!providerCfg?.baseUrl || !providerCfg.api || !providerCfg.apiKey) return null;
+  if (!providerCfg?.baseUrl || !providerCfg.apiKey) return null;
+  if (!providerCfg.api) providerCfg.api = "openai-completions";
 
   const timeoutMs = params.timeoutMs ?? DEFAULT_MODEL_PROBE_TIMEOUT_MS;
   const headers: Record<string, string> = {
@@ -245,6 +265,32 @@ async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeRe
         source: "direct_model_probe",
         precision: "model",
       };
+    }
+  }
+
+  if (providerCfg.api === "ollama") {
+    const url = `${providerCfg.baseUrl.replace(/\/+$/, "")}/v1/chat/completions`;
+    const body = {
+      model: params.modelId,
+      messages: [{ role: "user", content: "Reply with OK." }],
+      max_tokens: 8,
+      temperature: 0,
+    };
+    const start = Date.now();
+    try {
+      const resp = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(body) }, timeoutMs);
+      const elapsed = Date.now() - start;
+      if (resp.ok) {
+        return { ok: true, elapsed, status: "ok", mode: "api_key", source: "direct_model_probe", precision: "model", text: "OK (direct model probe)" };
+      }
+      let payload: any = null;
+      try { payload = await resp.json(); } catch {}
+      const error = extractErrorMessage(payload, `HTTP ${resp.status}`);
+      return { ok: false, elapsed, status: classifyErrorStatus(resp.status, error), error, mode: "api_key", source: "direct_model_probe", precision: "model" };
+    } catch (err: any) {
+      const elapsed = Date.now() - start;
+      const isTimeout = err?.name === "AbortError";
+      return { ok: false, elapsed, status: isTimeout ? "timeout" : "network", error: isTimeout ? "LLM request timed out." : (err?.message || "Network error"), mode: "api_key", source: "direct_model_probe", precision: "model" };
     }
   }
 

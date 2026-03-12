@@ -71,9 +71,20 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 By default, the dashboard reads config from `~/.openclaw/openclaw.json`. To use a custom path, set the `OPENCLAW_HOME` environment variable:
 
 ```bash
-OPENCLAW_HOME=/opt/openclaw 
+OPENCLAW_HOME=/opt/openclaw
 npm run dev
 ```
+
+### Gateway Chat URL
+
+By default, session chat links point to `http://<your-lan-ip>:18789/chat?...`. If your OpenClaw gateway is accessible via a custom domain or reverse proxy (e.g. `https://openclaw.local`), create a `.env.local` file in the dashboard root:
+
+```bash
+# .env.local
+NEXT_PUBLIC_GATEWAY_CHAT_BASE_URL=https://openclaw.local
+```
+
+This overrides the auto-detected LAN address. The token is still appended automatically.
 
 ## Docker Deployment
 
@@ -167,6 +178,17 @@ npm run dev
 默认读取 `~/.openclaw/openclaw.json`，可通过环境变量指定自定义路径：
 
 ```bash
-OPENCLAW_HOME=/opt/openclaw 
+OPENCLAW_HOME=/opt/openclaw
 npm run dev
 ```
+
+### Gateway 聊天链接地址
+
+默认情况下，会话聊天链接指向 `http://<局域网IP>:18789/chat?...`。如果你的 Gateway 通过自定义域名或反向代理访问（例如 `https://openclaw.local`），在仪表盘根目录创建 `.env.local` 文件：
+
+```bash
+# .env.local
+NEXT_PUBLIC_GATEWAY_CHAT_BASE_URL=https://openclaw.local
+```
+
+设置后将覆盖自动检测的局域网地址，Token 仍会自动附加。
