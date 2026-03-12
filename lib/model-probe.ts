@@ -193,7 +193,8 @@ function extractErrorMessage(payload: any, fallback: string): string {
 
 async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeResult | null> {
   const providerCfg = loadProviderConfig(params.providerId);
-  if (!providerCfg?.baseUrl || !providerCfg.api || !providerCfg.apiKey) return null;
+  if (!providerCfg?.baseUrl || !providerCfg.apiKey) return null;
+  if (!providerCfg.api) providerCfg.api = "openai-completions";
 
   const timeoutMs = params.timeoutMs ?? DEFAULT_MODEL_PROBE_TIMEOUT_MS;
   const headers: Record<string, string> = {
