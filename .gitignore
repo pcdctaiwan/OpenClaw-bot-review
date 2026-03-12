@@ -4,3 +4,5 @@ node_modules
 next-env.d.ts
 .idea
 /public/assets/pixel-office/*.mp3
+.env.local
+.env.*.local

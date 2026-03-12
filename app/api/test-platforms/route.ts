@@ -1,8 +1,41 @@
 import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
+
+function resolveSecretRef(value: any): string | null {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  try {
+    // env: read from environment variable
+    if (value.source === "env" && value.id) {
+      return process.env[value.id] || null;
+    }
+    // file: read from file path
+    if (value.source === "file" && value.id) {
+      return fs.readFileSync(value.id, "utf-8").trim() || null;
+    }
+    // exec + keychain: macOS Keychain (security command)
+    if (value.source === "exec" && value.provider === "keychain" && value.id) {
+      if (process.platform !== "darwin") return null;
+      const result = execSync(`security find-generic-password -a ${JSON.stringify(value.id)} -w`, { encoding: "utf8" }).trim();
+      return result || null;
+    }
+    // exec + 1password: op CLI
+    if (value.source === "exec" && value.provider === "1password" && value.id) {
+      const result = execSync(`op read ${JSON.stringify(value.id)}`, { encoding: "utf8" }).trim();
+      return result || null;
+    }
+    // exec + pass: Unix pass store
+    if (value.source === "exec" && value.provider === "pass" && value.id) {
+      const result = execSync(`pass show ${JSON.stringify(value.id)}`, { encoding: "utf8" }).split("\n")[0].trim();
+      return result || null;
+    }
+  } catch {}
+  return null;
+}
 const QQBOT_TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 const QQBOT_API_BASE = "https://api.sgroup.qq.com";
 
@@ -703,13 +736,19 @@ export async function POST() {
 
       // Discord: only test once
       if (id === "main" && discordConfig.enabled && discordConfig.token) {
-        platformTests.push(testDiscord(id, discordConfig.token, discordTestUser));
+        const resolvedDiscordToken = resolveSecretRef(discordConfig.token);
+        if (resolvedDiscordToken) {
+          platformTests.push(testDiscord(id, resolvedDiscordToken, discordTestUser));
+        }
       }
 
       // Telegram: only test once
       if (id === "main" && telegramConfig.enabled && telegramConfig.botToken) {
-        const telegramTestUser = getTelegramDmUser(id);
-        platformTests.push(testTelegram(id, telegramConfig.botToken, telegramTestUser));
+        const resolvedToken = resolveSecretRef(telegramConfig.botToken);
+        if (resolvedToken) {
+          const telegramTestUser = getTelegramDmUser(id);
+          platformTests.push(testTelegram(id, resolvedToken, telegramTestUser));
+        }
       }
 
       // WhatsApp: only test once, via gateway
