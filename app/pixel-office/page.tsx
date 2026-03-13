@@ -892,6 +892,40 @@ export default function PixelOfficePage() {
     return () => clearInterval(interval)
   }, [refreshGatewayHealthSnapshot])
 
+  // Debug helper: expose __pixelOffice on window for console testing
+  const debugCounterRef = useRef(0)
+  useEffect(() => {
+    ;(window as any).__pixelOffice = {
+      addAgents(count = 1) {
+        const office = officeRef.current
+        if (!office) { console.warn('[pixelOffice] office not ready'); return }
+        for (let i = 0; i < count; i++) {
+          debugCounterRef.current++
+          const id = 9000 + debugCounterRef.current
+          office.addAgent(id, undefined, undefined, undefined, undefined, true)
+        }
+        console.log(`[pixelOffice] added ${count} agent(s), ids 9001–${9000 + debugCounterRef.current}`)
+      },
+      clearDebug() {
+        const office = officeRef.current
+        if (!office) return
+        for (let i = 1; i <= debugCounterRef.current; i++) {
+          office.removeAgent(9000 + i)
+        }
+        debugCounterRef.current = 0
+        console.log('[pixelOffice] cleared debug agents')
+      },
+      list() {
+        const office = officeRef.current
+        if (!office) return
+        const rows: any[] = []
+        for (const [id, ch] of office.characters) rows.push({ id, state: ch.state, tile: `${ch.tileCol},${ch.tileRow}` })
+        console.table(rows)
+      },
+    }
+    return () => { delete (window as any).__pixelOffice }
+  }, []) // mount once only
+
   useEffect(() => {
     if (!selectedAgentId) return
     try {
