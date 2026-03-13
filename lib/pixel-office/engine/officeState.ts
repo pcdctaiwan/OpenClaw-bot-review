@@ -1950,9 +1950,165 @@ export class OfficeState {
     }
   }
 
+  /**
+   * Collision avoidance: when two walking characters contest the same next tile,
+   * the one farther from its destination steps aside (sideways first, then backwards)
+   * and waits for the closer one to pass before resuming.
+   */
+  /** Find a free adjacent tile for a character to dodge to, or null if none found */
+  private findDodgeTile(
+    ch: Character,
+    dc: number, dr: number,
+    walkableSet: Set<string>,
+    occupiedKeys: Set<string>,
+    claimedNext: Map<string, number>,
+  ): { col: number; row: number } | null {
+    const candidates: Array<{ col: number; row: number }> = dc !== 0 || dr !== 0
+      ? [
+          { col: ch.tileCol + dr,  row: ch.tileRow + dc  }, // side A (perpendicular)
+          { col: ch.tileCol - dr,  row: ch.tileRow - dc  }, // side B (perpendicular)
+          { col: ch.tileCol - dc,  row: ch.tileRow - dr  }, // backwards
+        ]
+      : [
+          // No direction info — try all 4 neighbours
+          { col: ch.tileCol + 1, row: ch.tileRow },
+          { col: ch.tileCol - 1, row: ch.tileRow },
+          { col: ch.tileCol,     row: ch.tileRow + 1 },
+          { col: ch.tileCol,     row: ch.tileRow - 1 },
+        ]
+
+    for (const cand of candidates) {
+      const key = `${cand.col},${cand.row}`
+      if (!walkableSet.has(key)) continue
+      if (this.blockedTiles.has(key)) continue
+      if (occupiedKeys.has(key)) continue
+      if (claimedNext.has(key)) continue
+      return cand
+    }
+    return null
+  }
+
+  private resolveWalkConflicts(): void {
+    const allHumanoids: Character[] = []
+    for (const ch of this.characters.values()) {
+      if (ch.matrixEffect || ch.isCat || ch.isLobster || ch.greetLocked) continue
+      if (ch.yieldTimer > 0) continue
+      allHumanoids.push(ch)
+    }
+    if (allHumanoids.length < 2) return
+
+    // Current tile positions of every character (for dodge-target exclusion)
+    const occupiedKeys = new Set<string>()
+    for (const ch of this.characters.values()) {
+      occupiedKeys.add(`${ch.tileCol},${ch.tileRow}`)
+    }
+
+    const walkableSet = new Set<string>(this.walkableTiles.map(t => `${t.col},${t.row}`))
+
+    // claimedNext: tiles that are "taken" — no other character may step into them.
+    // Pre-populate with standing characters' current tiles only.
+    // Walking characters claim their next tile dynamically in Pass 1 (sorted by priority).
+    const claimedNext = new Map<string, number>()
+    for (const ch of allHumanoids) {
+      if (ch.state !== CharacterState.WALK) {
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+      }
+    }
+
+    // ── Pass 1: next-tile conflicts ───────────────────────────────────────────
+    // All walkers (including mid-step), sorted by remaining path length.
+    // Shorter path = closer to destination = higher priority = claims the tile.
+    // Loser is snapped back to current tile and must dodge.
+    const walkers = allHumanoids.filter(
+      ch => ch.state === CharacterState.WALK && !ch.yieldDestination && ch.path.length > 0,
+    )
+    walkers.sort((a, b) => a.path.length - b.path.length)
+
+    for (const ch of walkers) {
+      const next = ch.path[0]
+      const key = `${next.col},${next.row}`
+      if (!claimedNext.has(key)) {
+        // Also claim current tile so no one walks into us from behind
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+        claimedNext.set(key, ch.id)
+        continue
+      }
+      // Tile is taken — snap back to current tile and dodge
+      if (ch.moveProgress > 0) {
+        // Abort mid-step: snap back to the tile we came from
+        ch.x = ch.tileCol * TILE_SIZE + TILE_SIZE / 2
+        ch.y = ch.tileRow * TILE_SIZE + TILE_SIZE / 2
+        ch.moveProgress = 0
+      }
+      const dest = ch.path[ch.path.length - 1]
+      const dc = next.col - ch.tileCol
+      const dr = next.row - ch.tileRow
+      const dodgeTile = this.findDodgeTile(ch, dc, dr, walkableSet, occupiedKeys, claimedNext)
+      if (dodgeTile) {
+        ch.path = [dodgeTile]
+        ch.moveProgress = 0
+        ch.yieldDestination = { col: dest.col, row: dest.row }
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+        claimedNext.set(`${dodgeTile.col},${dodgeTile.row}`, ch.id)
+      } else {
+        ch.path = []
+        ch.yieldTimer = 0.5 + Math.random() * 0.4
+        ch.yieldDestination = { col: dest.col, row: dest.row }
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+      }
+    }
+
+    // ── Pass 2: hard overlap — same tileCol/tileRow right now ────────────────
+    const tileGroups = new Map<string, Character[]>()
+    for (const ch of allHumanoids) {
+      const key = `${ch.tileCol},${ch.tileRow}`
+      const g = tileGroups.get(key)
+      if (g) g.push(ch)
+      else tileGroups.set(key, [ch])
+    }
+
+    for (const group of tileGroups.values()) {
+      if (group.length < 2) continue
+
+      // Highest priority (index 0) stays; others dodge
+      group.sort((a, b) => {
+        const aScore = a.state === CharacterState.WALK ? a.path.length : 9999
+        const bScore = b.state === CharacterState.WALK ? b.path.length : 9999
+        return aScore - bScore
+      })
+
+      for (let i = 1; i < group.length; i++) {
+        const dodger = group[i]
+        if (dodger.yieldTimer > 0 || dodger.yieldDestination) continue
+
+        const dc = dodger.dir === Direction.RIGHT ? 1 : dodger.dir === Direction.LEFT ? -1 : 0
+        const dr = dodger.dir === Direction.DOWN  ? 1 : dodger.dir === Direction.UP   ? -1 : 0
+
+        const dodgeTile = this.findDodgeTile(dodger, dc, dr, walkableSet, occupiedKeys, claimedNext)
+        if (dodgeTile) {
+          if (dodger.state === CharacterState.WALK && dodger.path.length > 0) {
+            const orig = dodger.path[dodger.path.length - 1]
+            dodger.yieldDestination = { col: orig.col, row: orig.row }
+          }
+          dodger.path = [dodgeTile]
+          dodger.moveProgress = 0
+          dodger.state = CharacterState.WALK
+          dodger.frame = 0
+          dodger.frameTimer = 0
+          claimedNext.set(`${dodgeTile.col},${dodgeTile.row}`, dodger.id)
+          occupiedKeys.delete(`${dodger.tileCol},${dodger.tileRow}`)
+          occupiedKeys.add(`${dodgeTile.col},${dodgeTile.row}`)
+        } else {
+          dodger.yieldTimer = 0.3 + Math.random() * 0.3
+        }
+      }
+    }
+  }
+
   update(dt: number): void {
     this.ensureGatewaySre()
     this.bugSystem.update(dt, this.bugWorldWidth, this.bugWorldHeight)
+    this.resolveWalkConflicts()
     const toDelete: number[] = []
     const firstIdleHumanoid = this.getFirstIdleHumanoid()
     for (const ch of this.characters.values()) {
@@ -1978,6 +2134,24 @@ export class OfficeState {
         continue
       }
 
+      // Yield timer: character is waiting at dodge tile before resuming
+      if (ch.yieldTimer > 0) {
+        ch.yieldTimer = Math.max(0, ch.yieldTimer - dt)
+        if (ch.yieldTimer === 0 && ch.yieldDestination) {
+          const dest = ch.yieldDestination
+          ch.yieldDestination = null
+          const resumePath = findPath(ch.tileCol, ch.tileRow, dest.col, dest.row, this.tileMap, this.blockedTiles)
+          if (resumePath.length > 0) {
+            ch.path = resumePath
+            ch.moveProgress = 0
+            ch.state = CharacterState.WALK
+            ch.frame = 0
+            ch.frameTimer = 0
+          }
+        }
+        continue // frozen while waiting
+      }
+
       if (ch.systemRoleType === 'gateway_sre' && !ch.greetLocked) {
         this.updateGatewaySreCharacter(ch, dt)
       } else {
@@ -1986,6 +2160,14 @@ export class OfficeState {
         this.withOwnSeatUnblocked(ch, () =>
           updateCharacter(ch, dt, this.walkableTiles, this.seats, this.tileMap, this.blockedTiles, this.interactionPoints)
         )
+      }
+
+      // If character just finished walking to dodge tile, start wait timer
+      if (ch.yieldDestination && ch.state !== CharacterState.WALK && ch.path.length === 0) {
+        ch.yieldTimer = 0.6 + Math.random() * 0.5
+        ch.state = CharacterState.IDLE
+        ch.frame = 0
+        ch.frameTimer = 0
       }
 
       if (ch.isLobster) {
