@@ -1180,12 +1180,8 @@ export default function PixelOfficePage() {
           return tileX >= f.col && tileX < f.col + entry.footprintW &&
                  tileY >= f.row && tileY < f.row + entry.footprintH
         })) {
-          // Click on PC — open gateway chat for main agent
-          const gw = gatewayRef.current
-          const sessionKey = 'agent:main:main'
-          let chatUrl = buildGatewayUrl(gw.port, '/chat', { session: sessionKey }, gw.host)
-          if (gw.token) chatUrl = buildGatewayUrl(gw.port, '/chat', { session: sessionKey, token: gw.token }, gw.host)
-          window.open(chatUrl, '_blank')
+          // Click on PC — navigate to dashboard settings
+          window.location.href = '/'
         } else if (office.layout.furniture.some(f => {
           if (f.uid !== 'library-r') return false
           const entry = getCatalogEntry(f.type)
@@ -1658,6 +1654,8 @@ export default function PixelOfficePage() {
         })
       }
     }
+    const stateOrder: Record<string, number> = { working: 0, waiting: 1, idle: 2, offline: 3 }
+    expanded.sort((a, b) => (stateOrder[a.state] ?? 9) - (stateOrder[b.state] ?? 9))
     return expanded
   }, [agents])
 
