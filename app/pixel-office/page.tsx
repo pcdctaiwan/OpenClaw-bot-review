@@ -812,7 +812,8 @@ export default function PixelOfficePage() {
           }
           // Broadcast notification on meaningful state transitions
           if (prev && prev !== agent.state) {
-            if (agent.state === 'working' && prev !== 'working') {
+            // Only show "上班了" when agent comes back from offline (not from idle)
+            if (agent.state === 'working' && prev === 'offline') {
               const bid = Date.now() + Math.random()
               setBroadcasts(b => [...b, { id: bid, emoji: agent.emoji, text: `${agent.emoji} ${agent.name} ${t('pixelOffice.broadcast.online')}` }])
               setTimeout(() => setBroadcasts(b => b.filter(x => x.id !== bid)), 5000)
