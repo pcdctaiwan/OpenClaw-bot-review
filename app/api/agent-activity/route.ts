@@ -560,6 +560,58 @@ async function parseSubagents(agentSessionsDir: string, agentId: string): Promis
   return allSubagents
 }
 
+/**
+ * Read last N lines of a JSONL session file and determine the agent's true working state.
+ *
+ * Logic:
+ *  - Last message role is 'toolResult'  → working (parent about to process tool output)
+ *  - Last assistant stopReason is 'toolUse' → working (tool call in flight)
+ *  - Last assistant stopReason is 'stop'   → idle (turn completed, waiting for next input)
+ *  - Fallback: time-based heuristic
+ */
+async function detectStateFromSession(
+  sessionFilePath: string,
+  now: number,
+  lastActive: number,
+): Promise<'idle' | 'working' | 'offline'> {
+  const OFFLINE_MS = 10 * 60 * 1000
+  const timeDiff = now - lastActive
+  if (lastActive === 0 || timeDiff > OFFLINE_MS) return 'offline'
+
+  try {
+    const content = await fs.readFile(sessionFilePath, 'utf8')
+    const lines = content.split('\n').filter(l => l.trim()).slice(-30)
+
+    let lastRole: string | null = null
+    let lastStopReason: string | null = null
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const record = JSON.parse(lines[i])
+        if (record.type !== 'message' || !record.message) continue
+        const { role, stopReason } = record.message
+        if (!lastRole) lastRole = role ?? null
+        if (role === 'assistant') {
+          lastStopReason = stopReason ?? null
+          break
+        }
+      } catch { /* skip malformed line */ }
+    }
+
+    // User message is the last written record → agent is generating a response right now
+    if (lastRole === 'user') return 'working'
+    // toolResult as the latest message → agent is processing the tool output
+    if (lastRole === 'toolResult') return 'working'
+    // Agent called a tool and is waiting for the result
+    if (lastStopReason === 'toolUse') return 'working'
+    // Agent completed its turn — it's now idle
+    if (lastStopReason === 'stop') return 'idle'
+  } catch { /* file unreadable — fall through */ }
+
+  // Fallback: time-based (no session content available)
+  return timeDiff <= 2 * 60 * 1000 ? 'working' : 'idle'
+}
+
 export async function GET() {
   const configPath = OPENCLAW_CONFIG_PATH
   const agentsDir = OPENCLAW_AGENTS_DIR
@@ -577,34 +629,69 @@ export async function GET() {
 
         for (const agent of agentList) {
           let lastActive = 0
+          let mostRecentSessionFile: string | null = null
           let agentSessionsDir = ''
 
           if (existsSync(agentsDir)) {
             agentSessionsDir = path.join(agentsDir, agent.id, 'sessions')
             if (existsSync(agentSessionsDir)) {
+              // Use JSONL file mtime for lastActive (reliable, updates on every message write).
+              // Also build a map from sessionId → filePath using sessions.json, so we can
+              // pick the correct file for content-based state detection.
+              const sessionIdToFile = new Map<string, string>()
+              try {
+                const sessionsIndexPath = path.join(agentSessionsDir, 'sessions.json')
+                if (existsSync(sessionsIndexPath)) {
+                  const raw = await fs.readFile(sessionsIndexPath, 'utf8')
+                  const index = JSON.parse(raw) as Record<string, { sessionId?: string }>
+                  for (const [, meta] of Object.entries(index)) {
+                    if (typeof meta.sessionId === 'string') {
+                      sessionIdToFile.set(meta.sessionId, path.join(agentSessionsDir, `${meta.sessionId}.jsonl`))
+                    }
+                  }
+                }
+              } catch { /* ignore */ }
+
               try {
                 const files = await fs.readdir(agentSessionsDir)
                 for (const file of files) {
+                  if (!file.endsWith('.jsonl')) continue
                   const filePath = path.join(agentSessionsDir, file)
                   const stat = await fs.stat(filePath)
                   if (stat.mtimeMs > lastActive) {
                     lastActive = stat.mtimeMs
+                    mostRecentSessionFile = filePath
                   }
                 }
-              } catch {
-                // Ignore
+              } catch { /* ignore */ }
+
+              // Prefer the sessions.json-mapped file over raw scan when available
+              // (ensures we read a proper session, not a probe or temp file)
+              if (mostRecentSessionFile) {
+                const sessionId = path.basename(mostRecentSessionFile, '.jsonl')
+                if (!sessionIdToFile.has(sessionId)) {
+                  // Most-recent file is not in sessions.json — find best known session by mtime
+                  let bestMtime = 0
+                  for (const [, fp] of sessionIdToFile) {
+                    try {
+                      const s = await fs.stat(fp)
+                      if (s.mtimeMs > bestMtime) { bestMtime = s.mtimeMs; mostRecentSessionFile = fp }
+                    } catch { /* ignore */ }
+                  }
+                }
               }
             }
           }
 
+          // Determine state from session content (falls back to time-based)
           let state: 'idle' | 'working' | 'waiting' | 'offline'
-          const timeDiff = now - lastActive
-          if (lastActive === 0 || timeDiff > 10 * 60 * 1000) {
-            state = 'offline'
-          } else if (timeDiff <= 2 * 60 * 1000) {
-            state = 'working'
+          if (mostRecentSessionFile && existsSync(mostRecentSessionFile)) {
+            state = await detectStateFromSession(mostRecentSessionFile, now, lastActive)
           } else {
-            state = 'idle'
+            const timeDiff = now - lastActive
+            if (lastActive === 0 || timeDiff > 10 * 60 * 1000) state = 'offline'
+            else if (timeDiff <= 2 * 60 * 1000) state = 'working'
+            else state = 'idle'
           }
 
           // Parse subagents for online agents
