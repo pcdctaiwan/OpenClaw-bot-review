@@ -1949,6 +1949,13 @@ export class OfficeState {
     }
   }
 
+  setAgentTaskText(id: number, text: string | undefined): void {
+    const ch = this.characters.get(id)
+    if (ch) {
+      ch.taskText = text
+    }
+  }
+
   showPermissionBubble(id: number): void {
     const ch = this.characters.get(id)
     if (ch) {
