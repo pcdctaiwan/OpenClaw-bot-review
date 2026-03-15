@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
+import { detectChangeAndBackup } from "@/lib/config-backup";
 
 // 配置文件路径：优先使用 OPENCLAW_HOME 环境变量，否则默认 ~/.openclaw
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
@@ -262,6 +263,10 @@ export async function GET() {
 
   try {
     const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
+
+    // 偵測 openclaw.json 是否有變更，若有則自動備份
+    detectChangeAndBackup(raw);
+
     const config = JSON.parse(raw);
 
     // 提取 agents 信息
@@ -536,6 +541,13 @@ export async function GET() {
       }
     }
 
+    // 取得 openclaw.json 的最後修改時間，用於前端偵測近期 config 變更
+    let configLastModified: string | null = null;
+    try {
+      const stat = fs.statSync(CONFIG_PATH);
+      configLastModified = stat.mtime.toISOString();
+    } catch { /* ignore */ }
+
     const data = {
       agents: agentsWithStatus,
       providers,
@@ -546,6 +558,7 @@ export async function GET() {
         host: process.env.NEXT_PUBLIC_GATEWAY_CHAT_BASE_URL || config.gateway?.host || config.gateway?.hostname || "",
       },
       groupChats,
+      configLastModified,
     };
     configCache = { data, ts: Date.now() };
     return NextResponse.json(data);
