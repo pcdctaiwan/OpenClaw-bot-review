@@ -218,6 +218,22 @@ interface ZDrawable {
   draw: (ctx: CanvasRenderingContext2D) => void
 }
 
+/** Wrap task text at maxChars characters or at Chinese punctuation boundaries */
+function wrapTaskText(text: string, maxChars = 10): string[] {
+  const punctuation = /[，。！？、；：,!?;:]/
+  const lines: string[] = []
+  let current = ''
+  for (let i = 0; i < text.length; i++) {
+    current += text[i]
+    if (punctuation.test(text[i]) || current.length >= maxChars) {
+      lines.push(current)
+      current = ''
+    }
+  }
+  if (current) lines.push(current)
+  return lines.slice(0, 6) // max 6 lines
+}
+
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   furniture: FurnitureInstance[],
@@ -573,6 +589,68 @@ export function renderScene(
           c.fillText(ch.label, labelX, labelY + 1)
           c.fillStyle = labelColor
           c.fillText(ch.label, labelX, labelY)
+          c.restore()
+        },
+      })
+    }
+
+    // Task text bubble: scrolling marquee above the agent's head when working
+    if (ch.taskText && ch.isActive && ch.state === CharacterState.TYPE && !ch.isSubagent) {
+      const taskX = Math.round(offsetX + ch.x * zoom)
+      const labelFontSize = Math.max(12, Math.round(5.25 * zoom))
+      const taskFontSize = Math.max(10, Math.round(4.5 * zoom))
+      const padX = 5 * zoom
+      const padY = 3 * zoom
+      const bubbleH = taskFontSize + padY * 2
+      const bubbleW = Math.round(72 * zoom)  // fixed width window
+      const boxX = taskX - bubbleW / 2
+      const boxY = drawY - 2 * zoom - labelFontSize - 4 * zoom - bubbleH - 4 * zoom
+      const fullText = ch.taskText
+      drawables.push({
+        zY: charZY + 0.2,
+        draw: (c) => {
+          c.save()
+          c.font = `${taskFontSize}px sans-serif`
+          const fullW = c.measureText(fullText).width
+          // Scroll speed: pixels per ms. Pause at start/end with a gap.
+          const gap = bubbleW * 0.5
+          const cycle = fullW + gap
+          const speed = 30 // px/s at zoom=1, scaled below
+          const scrollPx = ((Date.now() / 1000 * speed * zoom) % cycle)
+          const textX = boxX + padX + (fullW > bubbleW - padX * 2 ? gap - scrollPx : 0)
+
+          // Bubble background
+          const r = 3 * zoom
+          c.beginPath()
+          c.moveTo(boxX + r, boxY)
+          c.lineTo(boxX + bubbleW - r, boxY)
+          c.arcTo(boxX + bubbleW, boxY, boxX + bubbleW, boxY + r, r)
+          c.lineTo(boxX + bubbleW, boxY + bubbleH - r)
+          c.arcTo(boxX + bubbleW, boxY + bubbleH, boxX + bubbleW - r, boxY + bubbleH, r)
+          // Tail pointing down
+          const tailW = 5 * zoom
+          c.lineTo(taskX + tailW, boxY + bubbleH)
+          c.lineTo(taskX, boxY + bubbleH + 4 * zoom)
+          c.lineTo(taskX - tailW, boxY + bubbleH)
+          c.lineTo(boxX + r, boxY + bubbleH)
+          c.arcTo(boxX, boxY + bubbleH, boxX, boxY + bubbleH - r, r)
+          c.lineTo(boxX, boxY + r)
+          c.arcTo(boxX, boxY, boxX + r, boxY, r)
+          c.closePath()
+          c.fillStyle = 'rgba(15,23,42,0.88)'
+          c.fill()
+          c.strokeStyle = 'rgba(99,102,241,0.7)'
+          c.lineWidth = zoom
+          c.stroke()
+
+          // Clip to bubble interior and draw scrolling text
+          c.beginPath()
+          c.rect(boxX + padX, boxY, bubbleW - padX * 2, bubbleH)
+          c.clip()
+          c.fillStyle = '#e2e8f0'
+          c.textAlign = 'left'
+          c.textBaseline = 'middle'
+          c.fillText(fullText, textX, boxY + bubbleH / 2)
           c.restore()
         },
       })

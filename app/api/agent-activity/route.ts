@@ -68,6 +68,7 @@ export interface AgentActivity {
   lastActive: number
   subagents?: SubagentInfo[]
   cronJobs?: CronJobInfo[]
+  lastTask?: string
 }
 
 type AgentConfigEntry = {
@@ -822,6 +823,89 @@ async function parseCronJobs(agentSessionsDir: string, cronJobsForAgent: CronSto
 }
 
 /**
+ * Extract the actual user-typed text from a session message block.
+ *
+ * Handles three formats:
+ * 1. Subagent spawn: contains "[Subagent Task]: ..." — extract what follows the label
+ * 2. Channel message (Telegram etc.): injected "Conversation info" + "Sender" code fences
+ *    before the real text — extract what comes after the last ``` fence
+ * 3. Fallback: strip XML context blocks and leading timestamp
+ */
+function extractUserText(rawText: string): string | null {
+  // Strip XML context injections first (relevant-memories etc.)
+  const noXml = rawText.replace(/<[a-z][\s\S]*?<\/[a-z][^>]*>/gi, '')
+
+  // Strategy 1: subagent task — "[Subagent Task]: ..."
+  const subagentMatch = noXml.match(/\[Subagent Task\]:\s*([\s\S]+)/)
+  if (subagentMatch) {
+    return subagentMatch[1].replace(/\s+/g, ' ').trim().slice(0, 500)
+  }
+
+  // Strategy 2: channel message — text after last ``` fence
+  const lastFence = rawText.lastIndexOf('```')
+  if (lastFence !== -1) {
+    const afterFence = rawText.slice(lastFence + 3).trim()
+    if (afterFence.length > 3) {
+      return afterFence.replace(/\s+/g, ' ').trim().slice(0, 500)
+    }
+  }
+
+  // Strategy 3: strip timestamp prefix and return remaining
+  const noTs = noXml.replace(/^\[[^\]]{5,40}\]\s*/, '').trim()
+  const text = noTs.replace(/\s+/g, ' ').trim()
+  return text.length > 5 ? text.slice(0, 500) : null
+}
+
+/**
+ * Extract the last user message text from a session file — used as the agent's "last task".
+ *
+ * Priority:
+ * 1. The original subagent spawn task ("[Subagent Task]: ...") — scan from the start
+ * 2. Most recent real user message — scan from the end, skip system notifications
+ */
+async function extractLastUserTask(sessionFilePath: string): Promise<string | null> {
+  try {
+    const content = await fs.readFile(sessionFilePath, 'utf8')
+    const allLines = content.split('\n').filter(l => l.trim())
+
+    // Pass 1: find the first [Subagent Task] (set at spawn time, stable throughout session)
+    for (const line of allLines.slice(0, 40)) {
+      try {
+        const record = JSON.parse(line)
+        if (record.type !== 'message' || !record.message) continue
+        if (record.message.role !== 'user') continue
+        const blocks = Array.isArray(record.message.content) ? record.message.content : []
+        for (const block of blocks) {
+          if (block?.type !== 'text' || typeof block.text !== 'string') continue
+          if (!block.text.includes('[Subagent Task]')) continue
+          const text = extractUserText(block.text)
+          if (text) return text
+        }
+      } catch { /* skip */ }
+    }
+
+    // Pass 2: most recent real user message (direct agents, e.g. main)
+    const skipPhrases = ['A completed subagent task', 'Action:\n', 'END_UNTRUSTED_CHILD_RESULT', 'Continue where you left off']
+    const recent = allLines.slice(-80)
+    for (let i = recent.length - 1; i >= 0; i--) {
+      try {
+        const record = JSON.parse(recent[i])
+        if (record.type !== 'message' || !record.message) continue
+        if (record.message.role !== 'user') continue
+        const blocks = Array.isArray(record.message.content) ? record.message.content : []
+        for (const block of blocks) {
+          if (block?.type !== 'text' || typeof block.text !== 'string') continue
+          if (skipPhrases.some(p => block.text.includes(p))) continue
+          const text = extractUserText(block.text)
+          if (text) return text
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* ignore */ }
+  return null
+}
+
+/**
  * Read last N lines of a JSONL session file and determine the agent's true working state.
  *
  * Logic:
@@ -969,6 +1053,12 @@ export async function GET() {
             if (cronJobs.length === 0) cronJobs = undefined
           }
 
+          // Extract last user task for working agents
+          let lastTask: string | undefined
+          if (state === 'working' && mostRecentSessionFile && existsSync(mostRecentSessionFile)) {
+            lastTask = (await extractLastUserTask(mostRecentSessionFile)) ?? undefined
+          }
+
           agents.push({
             agentId: agent.id,
             name: agent.name || agent.id,
@@ -977,6 +1067,7 @@ export async function GET() {
             lastActive,
             subagents,
             cronJobs,
+            lastTask,
           })
         }
       }
