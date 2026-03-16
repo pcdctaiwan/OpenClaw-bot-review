@@ -108,14 +108,20 @@ export async function POST() {
     }
 
     const results: DmSessionResult[] = [];
-    const platformsToTest = ["feishu", "discord", "telegram", "whatsapp", "qqbot"];
+    const platformsToTest = Array.from(new Set([
+      ...Object.entries(channels)
+        .filter(([, cfg]) => cfg && typeof cfg === "object" && (cfg as any).enabled !== false)
+        .map(([name]) => name),
+      ...bindings
+        .map((b: any) => b?.match?.channel)
+        .filter((name: unknown): name is string => typeof name === "string" && name.length > 0),
+    ]));
 
     for (const agent of agentList) {
       const id = agent.id;
       for (const platform of platformsToTest) {
-        // Check if this agent has this platform configured
         const ch = channels[platform];
-        if (!ch || ch.enabled === false) continue;
+        if (ch && ch.enabled === false) continue;
 
         const isMain = id === "main";
         const hasBinding = bindings.some(
