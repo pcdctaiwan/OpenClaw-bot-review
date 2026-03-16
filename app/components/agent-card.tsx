@@ -168,6 +168,11 @@ function PlatformBadge({
       badgeStyle: "bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/40 hover:border-blue-400",
       logoSizeClass: "w-[1.09375rem] h-[1.09375rem]",
     },
+    yuanbao: {
+      remoteLogoSrc: "https://cdn-hybrid-prod.hunyuan.tencent.com/manual/favicon.png",
+      logoFallbackSrc: "/assets/platform-logos/yuanbao-favicon.png?v=1",
+      badgeStyle: "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/40 hover:border-cyan-400",
+    },
     discord: {
       remoteLogoSrc: "https://cdn.simpleicons.org/discord/5865F2",
       logoFallbackSrc: "/assets/platform-logos/discord.svg",

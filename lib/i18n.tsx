@@ -136,6 +136,7 @@ const translations: Record<Locale, Record<string, string>> = {
 
     // platform
     "platform.feishu": "📱 飛書",
+    "platform.yuanbao": "🤖 元宝",
     "platform.discord": "🎮 Discord",
     "platform.telegram": "✈️ Telegram",
     "platform.whatsapp": "💬 WhatsApp",
@@ -422,6 +423,7 @@ const translations: Record<Locale, Record<string, string>> = {
 
     // platform
     "platform.feishu": "📱 飞书",
+    "platform.yuanbao": "🤖 元宝",
     "platform.discord": "🎮 Discord",
     "platform.telegram": "✈️ Telegram",
     "platform.whatsapp": "💬 WhatsApp",
@@ -708,6 +710,7 @@ const translations: Record<Locale, Record<string, string>> = {
 
     // platform
     "platform.feishu": "📱 Feishu",
+    "platform.yuanbao": "🤖 Yuanbao",
     "platform.discord": "🎮 Discord",
     "platform.telegram": "✈️ Telegram",
     "platform.whatsapp": "💬 WhatsApp",
