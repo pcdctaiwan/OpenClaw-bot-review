@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { getConfigCache, setConfigCache } from "@/lib/config-cache";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
+import { shouldHidePlatformChannel } from "@/lib/platforms";
 
 // 配置文件路径：优先使用 OPENCLAW_HOME 环境变量，否则默认 ~/.openclaw
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
@@ -329,12 +330,12 @@ export async function GET() {
     // 从预读的 sessions 数据获取飞书用户 open_id
     const feishuUserOpenIds = getFeishuUserOpenIds(agentIds, sessionsMap);
     const enabledChannelNames: string[] = Object.entries(channels)
-      .filter(([, cfg]) => cfg && typeof cfg === "object" && (cfg as any).enabled !== false)
+      .filter(([channelName, cfg]) => cfg && typeof cfg === "object" && (cfg as any).enabled !== false && !shouldHidePlatformChannel(channelName, channels))
       .map(([channelName]) => channelName);
     const boundChannelNames: string[] = Array.from(new Set(
       bindings
         .map((b: any) => b.match?.channel)
-        .filter((v: any): v is string => typeof v === "string" && v.length > 0)
+        .filter((v: any): v is string => typeof v === "string" && v.length > 0 && !shouldHidePlatformChannel(v, channels))
     ));
     const discoverChannelNames: string[] = Array.from(new Set([...enabledChannelNames, ...boundChannelNames]));
     const directPeerIdsByChannel: Record<string, Record<string, string>> = {};
@@ -406,7 +407,7 @@ export async function GET() {
         for (const binding of bindings) {
           if (binding?.agentId !== id) continue;
           const channelName = binding?.match?.channel;
-          if (!channelName || channelName === "feishu") continue;
+          if (!channelName || channelName === "feishu" || shouldHidePlatformChannel(channelName, channels)) continue;
           if (seenBindingChannels.has(channelName)) continue;
           seenBindingChannels.add(channelName);
           const botUserId = directPeerIdsByChannel[channelName]?.[id] || null;

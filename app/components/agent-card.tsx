@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { buildGatewayUrl } from "@/lib/gateway-url";
+import { getPlatformDisplayName } from "@/lib/platforms";
 
 export interface AgentPlatform {
   name: string;
@@ -160,6 +161,7 @@ function PlatformBadge({
   testResult?: PlatformTestResult | null;
 }) {
   const pName = platform.name;
+  const displayName = getPlatformDisplayName(pName);
   const badgeWidthClass = "w-[8.25rem]";
   const knownMeta: Record<string, { remoteLogoSrc: string; logoFallbackSrc: string; badgeStyle: string; logoSizeClass?: string }> = {
     feishu: {
@@ -193,8 +195,13 @@ function PlatformBadge({
       logoFallbackSrc: "/assets/platform-logos/qq-favicon.ico?v=1",
       badgeStyle: "bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/40 hover:border-blue-400",
     },
+    wecom: {
+      remoteLogoSrc: "/assets/platform-logos/wecom.svg?v=1",
+      logoFallbackSrc: "/assets/platform-logos/wecom.svg?v=1",
+      badgeStyle: "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/40 hover:border-emerald-400",
+    },
   };
-  const meta = knownMeta[pName];
+  const meta = knownMeta[displayName];
   const logoSizeClass = meta?.logoSizeClass || "w-3.5 h-3.5";
 
   let sessionKey: string;
@@ -209,9 +216,9 @@ function PlatformBadge({
   if (gatewayToken) sessionUrl = buildGatewayUrl(gatewayPort, "/chat", { session: sessionKey, token: gatewayToken }, gatewayHost);
 
   const badgeStyle = meta?.badgeStyle || "bg-gray-500/20 text-gray-300 border border-gray-500/30 hover:bg-gray-500/40 hover:border-gray-400";
-  const translated = t(`platform.${pName}`);
-  const labelRaw = translated !== `platform.${pName}` ? translated : pName;
-  const label = labelRaw.replace(/^[^\p{L}\p{N}]+/u, "").trim() || pName;
+  const translated = t(`platform.${displayName}`);
+  const labelRaw = translated !== `platform.${displayName}` ? translated : displayName;
+  const label = labelRaw.replace(/^[^\p{L}\p{N}]+/u, "").trim() || displayName;
 
   return (
     <div className="inline-flex items-center gap-1.5 max-w-full">

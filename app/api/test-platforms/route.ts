@@ -4,6 +4,7 @@ import path from "path";
 import { execFileSync } from "child_process";
 import { pathToFileURL } from "url";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
+import { shouldHidePlatformChannel } from "@/lib/platforms";
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
 const QQBOT_TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 const QQBOT_API_BASE = "https://api.sgroup.qq.com";
@@ -1184,6 +1185,7 @@ export async function POST() {
 
       for (const [channelName, channelConfig] of Object.entries(channels)) {
         if (specialPlatformNames.has(channelName)) continue;
+        if (shouldHidePlatformChannel(channelName, channels)) continue;
         if (!channelConfig || typeof channelConfig !== "object" || (channelConfig as any).enabled === false) continue;
 
         const hasBinding = bindings.some(
