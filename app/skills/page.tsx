@@ -67,6 +67,10 @@ export default function SkillsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "builtin" | "extension" | "custom">("all");
   const [search, setSearch] = useState("");
+  const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
+  const [skillContent, setSkillContent] = useState<Record<string, string>>({});
+  const [contentLoading, setContentLoading] = useState(false);
+  const [contentError, setContentError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +114,62 @@ export default function SkillsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!selectedSkill) return;
+
+    const cacheKey = `${selectedSkill.source}:${selectedSkill.id}`;
+    if (skillContent[cacheKey]) {
+      setContentError(null);
+      setContentLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setContentLoading(true);
+    setContentError(null);
+
+    fetch(`/api/skills/content?source=${encodeURIComponent(selectedSkill.source)}&id=${encodeURIComponent(selectedSkill.id)}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        return data;
+      })
+      .then((data) => {
+        const content = typeof data?.content === "string" ? data.content : "";
+        setSkillContent((prev) => ({ ...prev, [cacheKey]: content }));
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setContentError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setContentLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [selectedSkill, skillContent]);
+
+  useEffect(() => {
+    if (!selectedSkill) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedSkill(null);
+        setContentError(null);
+        setContentLoading(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedSkill]);
+
   const filtered = skills.filter((skill) => {
     if (filter === "builtin" && skill.source !== "builtin") return false;
     if (filter === "extension" && !skill.source.startsWith("extension:")) return false;
@@ -136,6 +196,9 @@ export default function SkillsPage() {
     if (source.startsWith("extension:")) return "bg-purple-500/20 text-purple-400";
     return "bg-green-500/20 text-green-400";
   };
+
+  const selectedSkillCacheKey = selectedSkill ? `${selectedSkill.source}:${selectedSkill.id}` : "";
+  const selectedSkillContent = selectedSkill ? skillContent[selectedSkillCacheKey] : "";
 
   if (loading) {
     return (
@@ -217,9 +280,11 @@ export default function SkillsPage() {
           </div>
         ) : (
           filtered.map((skill) => (
-            <div
+            <button
               key={`${skill.source}-${skill.id}`}
-              className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 hover:border-[var(--accent)]/50 transition"
+              type="button"
+              onClick={() => setSelectedSkill(skill)}
+              className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 hover:border-[var(--accent)]/50 transition text-left cursor-pointer"
             >
               <div className="flex items-start justify-between mb-2 gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -233,6 +298,9 @@ export default function SkillsPage() {
               <p className="text-xs text-[var(--text-muted)] line-clamp-2 mb-3 min-h-[2.5em]">
                 {skill.description || t("skills.noDesc")}
               </p>
+              <div className="mb-3 text-[10px] text-[var(--accent)]">
+                {t("skills.viewSource")}
+              </div>
               {skill.usedBy.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {skill.usedBy.map((agentId) => {
@@ -248,10 +316,55 @@ export default function SkillsPage() {
                   })}
                 </div>
               )}
-            </div>
+            </button>
           ))
         )}
       </div>
+
+      {selectedSkill && (
+        <div className="fixed inset-0 z-[70]">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60"
+            aria-label={t("common.close")}
+            onClick={() => {
+              setSelectedSkill(null);
+              setContentError(null);
+              setContentLoading(false);
+            }}
+          />
+          <div className="absolute inset-x-4 inset-y-6 md:inset-x-10 lg:inset-x-24 xl:inset-x-40 rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold truncate">{selectedSkill.emoji} {selectedSkill.name}</div>
+                <div className="text-xs text-[var(--text-muted)]">{t("skills.contentTitle")}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSkill(null);
+                  setContentError(null);
+                  setContentLoading(false);
+                }}
+                className="px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg)] text-sm hover:border-[var(--accent)] transition"
+              >
+                {t("common.close")}
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto bg-[var(--bg)]/40">
+              {contentLoading && !selectedSkillContent ? (
+                <div className="p-4 text-sm text-[var(--text-muted)]">{t("skills.loadingContent")}</div>
+              ) : contentError ? (
+                <div className="p-4 text-sm text-red-400">{t("skills.contentLoadFailed")}: {contentError}</div>
+              ) : (
+                <pre className="p-4 text-xs md:text-sm leading-6 whitespace-pre-wrap break-words text-[var(--text)] font-mono">
+                  {selectedSkillContent}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

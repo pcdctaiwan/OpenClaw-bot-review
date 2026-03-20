@@ -390,6 +390,8 @@ interface GreetingSequence {
   childId: number
   parentId: number
   childTarget: { col: number; row: number } | null
+  /** Where the parent walks to when they are NOT at their seat (midpoint meeting) */
+  parentTarget: { col: number; row: number } | null
   /** Tile to wait at when MainAgent is busy with another greeter */
   waitTarget: { col: number; row: number } | null
   phase: 'waiting' | 'walk' | 'pause' | 'parent_smile' | 'child_smile' | 'final_pause' | 'complete'
@@ -397,6 +399,8 @@ interface GreetingSequence {
   isExit: boolean
   /** Tile to walk back to after farewell, before despawning */
   exitReturnPos: { col: number; row: number } | null
+  /** True when child arrived at greeting tile but MainAgent wasn't physically present */
+  parentAbsent?: boolean
 }
 
 export class OfficeState {
@@ -429,7 +433,7 @@ export class OfficeState {
   private gatewaySreError: string | null = null
   private gatewaySreResponseMs: number | null = null
   private gatewaySreCheckedAt: number | null = null
-  private locale: OfficeLocale = 'zh-TW'
+  private locale: OfficeLocale = 'zh'
   private activeGreetings: Map<number, GreetingSequence> = new Map()
   /** The first regular agent added — all other agents greet this one on entry */
   private mainAgentId: number | null = null
@@ -439,6 +443,8 @@ export class OfficeState {
   private lingerSubagents: Map<number, number> = new Map()
   /** Subagent IDs queued for farewell — when processGreetQueue starts their greeting, mark isExit=true */
   private exitOnGreetComplete: Set<number> = new Set()
+  /** Agent IDs that were explicitly set to idle (下班) — only these should greet on next activation */
+  private explicitlyIdledAgents: Set<number> = new Set()
   /** Stashed exit return positions for subagents waiting in greetQueue. Cleared when greeting starts. */
   private exitReturnStash: Map<number, { col: number; row: number }> = new Map()
 
@@ -470,7 +476,7 @@ export class OfficeState {
     return getBlockedTiles(furniture, nonBlockingSeatTiles)
   }
 
-  constructor(layout?: OfficeLayout, locale: OfficeLocale = 'zh-TW') {
+  constructor(layout?: OfficeLayout, locale: OfficeLocale = 'zh') {
     this.locale = locale
     this.layout = layout || createDefaultLayout()
     this.tileMap = layoutToTileMap(this.layout)
@@ -893,6 +899,41 @@ export class OfficeState {
     return null
   }
 
+  /**
+   * Find a midpoint meeting location when MainAgent is not at their seat.
+   * Returns childTarget (where child walks) and parentTarget (where parent walks),
+   * adjacent to each other near the midpoint between the two characters.
+   */
+  private findMeetingTiles(
+    child: Character,
+    parent: Character,
+  ): { childTarget: { col: number; row: number }; parentTarget: { col: number; row: number } } | null {
+    const midCol = Math.round((child.tileCol + parent.tileCol) / 2)
+    const midRow = Math.round((child.tileRow + parent.tileRow) / 2)
+
+    // Find walkable tile closest to midpoint for the parent to walk to
+    const parentTile = this.findClosestWalkable(midCol, midRow)
+    if (!parentTile) return null
+
+    // Verify parent can reach that tile
+    const parentPath = findPath(parent.tileCol, parent.tileRow, parentTile.col, parentTile.row, this.tileMap, this.blockedTiles)
+    if (parentPath.length === 0 && !(parent.tileCol === parentTile.col && parent.tileRow === parentTile.row)) return null
+
+    // Child walks to a tile adjacent to parent's meeting tile
+    const adjacents = [
+      { col: parentTile.col - 1, row: parentTile.row },
+      { col: parentTile.col + 1, row: parentTile.row },
+      { col: parentTile.col,     row: parentTile.row - 1 },
+      { col: parentTile.col,     row: parentTile.row + 1 },
+    ]
+    for (const adj of adjacents) {
+      if (!isWalkable(adj.col, adj.row, this.tileMap, this.blockedTiles)) continue
+      const childPath = findPath(child.tileCol, child.tileRow, adj.col, adj.row, this.tileMap, this.blockedTiles)
+      if (childPath.length > 0) return { childTarget: adj, parentTarget: parentTile }
+    }
+    return null
+  }
+
   /** Returns true if MainAgent is currently in an active greeting sequence */
   private isMainAgentBusy(): boolean {
     if (this.mainAgentId === null) return false
@@ -935,7 +976,25 @@ export class OfficeState {
         this.greetQueue.length = 0
         return
       }
-      const greetTile = this.findAdjacentWalkable(mainCh)
+      // Determine meeting point based on whether MainAgent is at their seat
+      let greetTile: { col: number; row: number } | null
+      let parentTarget: { col: number; row: number } | null = null
+
+      if (mainCh.state === CharacterState.TYPE) {
+        // MainAgent is at seat — child walks to adjacent tile, parent stays
+        greetTile = this.findAdjacentWalkable(mainCh)
+      } else {
+        // MainAgent is not at seat — meet halfway
+        const meeting = this.findMeetingTiles(ch, mainCh)
+        if (meeting) {
+          greetTile = meeting.childTarget
+          parentTarget = meeting.parentTarget
+        } else {
+          // Fallback: walk to wherever MainAgent currently is
+          greetTile = this.findAdjacentWalkable(mainCh)
+        }
+      }
+
       if (!greetTile) { this.greetQueue.shift(); continue }
       const greetPath = findPath(ch.tileCol, ch.tileRow, greetTile.col, greetTile.row, this.tileMap, this.blockedTiles)
       if (greetPath.length === 0) { this.greetQueue.shift(); continue }
@@ -944,6 +1003,20 @@ export class OfficeState {
       ch.state = CharacterState.WALK
       ch.moveProgress = 0
       ch.greetLocked = true
+
+      // If parent needs to walk to meeting point, lock and start them moving now
+      if (parentTarget) {
+        const parentPath = findPath(mainCh.tileCol, mainCh.tileRow, parentTarget.col, parentTarget.row, this.tileMap, this.blockedTiles)
+        if (parentPath.length > 0) {
+          mainCh.greetLocked = true
+          mainCh.path = parentPath
+          mainCh.state = CharacterState.WALK
+          mainCh.moveProgress = 0
+        } else {
+          parentTarget = null // parent already there or unreachable
+        }
+      }
+
       const isExitGreeting = this.exitOnGreetComplete.has(ch.id)
       if (isExitGreeting) this.exitOnGreetComplete.delete(ch.id)
       // Recover the stashed return position for this exit greeting
@@ -953,6 +1026,7 @@ export class OfficeState {
         childId: ch.id,
         parentId: this.mainAgentId!,
         childTarget: greetTile,
+        parentTarget,
         waitTarget: null,
         phase: 'walk',
         timer: 0,
@@ -989,9 +1063,27 @@ export class OfficeState {
           const target = seq.childTarget
           if (!target) { seq.phase = 'complete'; break }
 
-          // Detected arrival: child tile matches target
-          if (child.tileCol === target.col && child.tileRow === target.row) {
-            // Override any FSM re-path
+          // If parent has a meeting target, keep them walking toward it
+          if (seq.parentTarget && parent) {
+            const pt = seq.parentTarget
+            const parentArrived = parent.tileCol === pt.col && parent.tileRow === pt.row
+            if (!parentArrived && parent.path.length === 0 && parent.state !== CharacterState.WALK) {
+              const repath = findPath(parent.tileCol, parent.tileRow, pt.col, pt.row, this.tileMap, this.blockedTiles)
+              if (repath.length > 0) {
+                parent.path = repath
+                parent.state = CharacterState.WALK
+                parent.moveProgress = 0
+                parent.greetLocked = true
+              }
+            }
+          }
+
+          const childArrived = child.tileCol === target.col && child.tileRow === target.row
+          const parentArrived = !seq.parentTarget || !parent ||
+            (parent.tileCol === seq.parentTarget.col && parent.tileRow === seq.parentTarget.row)
+
+          // Both have arrived at their respective meeting tiles
+          if (childArrived && parentArrived) {
             child.path = []
             child.state = CharacterState.IDLE
             child.greetLocked = true
@@ -1001,18 +1093,25 @@ export class OfficeState {
               parent.state = CharacterState.IDLE
               child.dir = this.directionToward(child.tileCol, child.tileRow, parent.tileCol, parent.tileRow)
               parent.dir = this.directionToward(parent.tileCol, parent.tileRow, child.tileCol, child.tileRow)
+              // Detect if parent is not physically nearby (wandered away from greeting tile)
+              const distToParent = Math.abs(parent.tileCol - child.tileCol) + Math.abs(parent.tileRow - child.tileRow)
+              if (seq.isExit && distToParent > 3) {
+                seq.parentAbsent = true
+              }
+            } else {
+              // Parent character doesn't exist
+              if (seq.isExit) seq.parentAbsent = true
             }
             seq.phase = 'pause'
             seq.timer = 1.0
           } else if (child.path.length === 0 && child.state !== CharacterState.WALK) {
-            // Lost path mid-walk — try to re-path to target
+            // Child lost path mid-walk — try to re-path to target
             const path = findPath(child.tileCol, child.tileRow, target.col, target.row, this.tileMap, this.blockedTiles)
             if (path.length > 0) {
               child.path = path
               child.state = CharacterState.WALK
               child.moveProgress = 0
             } else {
-              // Can't reach — complete without greeting
               seq.phase = 'complete'
             }
           }
@@ -1080,13 +1179,8 @@ export class OfficeState {
 
           if (seq.isExit) {
             child.bubbleType = null
-            const walkBack = this.findExitWalkPath(child, seq.exitReturnPos)
-            if (walkBack) {
-              child.path = walkBack.path
-              child.state = CharacterState.WALK
-              child.moveProgress = 0
-              child.pendingDespawn = walkBack.target
-            } else {
+            // After farewell (whether MainAgent was present or not), walk to bottom-right corner
+            if (!this.walkToBottomRightThenDespawn(child)) {
               child.matrixEffect = 'despawn'
               child.matrixEffectTimer = 0
               child.matrixEffectSeeds = matrixEffectSeeds()
@@ -1140,6 +1234,38 @@ export class OfficeState {
     )
     if (!sofa) return null
     return this.findClosestWalkable(sofa.col, sofa.row)
+  }
+
+  /** Find the walkable tile closest to the bottom-right corner of the map */
+  private findBottomRightCornerTile(): { col: number; row: number } | null {
+    if (this.walkableTiles.length === 0) return null
+    // Bottom-right in tile space = max col + max row
+    const maxCol = Math.max(...this.walkableTiles.map((t) => t.col))
+    const maxRow = Math.max(...this.walkableTiles.map((t) => t.row))
+    return this.findClosestWalkable(maxCol, maxRow)
+  }
+
+  /**
+   * Walk character to the bottom-right corner then despawn.
+   * Unlike findExitWalkPath, accepts any path length >= 1 so nearby agents still move.
+   */
+  private walkToBottomRightThenDespawn(ch: Character): boolean {
+    const corner = this.findBottomRightCornerTile()
+    if (!corner) return false
+    if (corner.col === ch.tileCol && corner.row === ch.tileRow) {
+      // Already there — despawn directly
+      ch.matrixEffect = 'despawn'
+      ch.matrixEffectTimer = 0
+      ch.matrixEffectSeeds = matrixEffectSeeds()
+      return true
+    }
+    const path = findPath(ch.tileCol, ch.tileRow, corner.col, corner.row, this.tileMap, this.blockedTiles)
+    if (path.length === 0) return false
+    ch.path = path
+    ch.state = CharacterState.WALK
+    ch.moveProgress = 0
+    ch.pendingDespawn = corner
+    return true
   }
 
   /**
@@ -1415,6 +1541,18 @@ export class OfficeState {
     ch.bubbleType = null
   }
 
+  removeAgentImmediately(id: number): void {
+    const ch = this.characters.get(id)
+    if (!ch) return
+    if (ch.seatId) {
+      const seat = this.seats.get(ch.seatId)
+      if (seat) seat.assigned = false
+    }
+    if (this.selectedAgentId === id) this.selectedAgentId = null
+    if (this.cameraFollowId === id) this.cameraFollowId = null
+    this.characters.delete(id)
+  }
+
   /** Find seat uid at a given tile position, or null */
   getSeatAtTile(col: number, row: number): string | null {
     for (const [uid, seat] of this.seats) {
@@ -1679,14 +1817,8 @@ export class OfficeState {
       // Stash the return position until the greeting actually starts
       if (exitReturnPos) this.exitReturnStash.set(id, exitReturnPos)
     } else {
-      // No MainAgent reachable — walk back directly then despawn
-      const walkBack = this.findExitWalkPath(ch, exitReturnPos)
-      if (walkBack) {
-        ch.pendingDespawn = walkBack.target
-        ch.path = walkBack.path
-        ch.state = CharacterState.WALK
-        ch.moveProgress = 0
-      } else {
+      // No MainAgent reachable — walk to bottom-right corner then despawn
+      if (!this.walkToBottomRightThenDespawn(ch)) {
         ch.matrixEffect = 'despawn'
         ch.matrixEffectTimer = 0
         ch.matrixEffectSeeds = matrixEffectSeeds()
@@ -1739,6 +1871,7 @@ export class OfficeState {
                 childId: id,
                 parentId: parentAgentId,
                 childTarget: greetTile,
+                parentTarget: null,
                 waitTarget: null,
                 phase: 'walk',
                 timer: 0,
@@ -1752,9 +1885,12 @@ export class OfficeState {
               continue
             }
           }
-          ch.matrixEffect = 'despawn'
-          ch.matrixEffectTimer = 0
-          ch.matrixEffectSeeds = matrixEffectSeeds()
+          // No greeting path — walk to bottom-right corner then despawn
+          if (!this.walkToBottomRightThenDespawn(ch)) {
+            ch.matrixEffect = 'despawn'
+            ch.matrixEffectTimer = 0
+            ch.matrixEffectSeeds = matrixEffectSeeds()
+          }
         }
         this.subagentMeta.delete(id)
         if (this.selectedAgentId === id) this.selectedAgentId = null
@@ -1764,6 +1900,31 @@ export class OfficeState {
     }
     for (const key of toRemove) {
       this.subagentIdMap.delete(key)
+    }
+  }
+
+  removeAllSubagentsImmediately(parentAgentId: number): void {
+    const toRemove: string[] = []
+    const toDeleteIds: number[] = []
+    for (const [key, id] of this.subagentIdMap) {
+      const meta = this.subagentMeta.get(id)
+      if (!meta || meta.parentAgentId !== parentAgentId) continue
+      const ch = this.characters.get(id)
+      if (ch?.seatId) {
+        const seat = this.seats.get(ch.seatId)
+        if (seat) seat.assigned = false
+      }
+      if (this.selectedAgentId === id) this.selectedAgentId = null
+      if (this.cameraFollowId === id) this.cameraFollowId = null
+      this.subagentMeta.delete(id)
+      toRemove.push(key)
+      toDeleteIds.push(id)
+    }
+    for (const key of toRemove) {
+      this.subagentIdMap.delete(key)
+    }
+    for (const id of toDeleteIds) {
+      this.characters.delete(id)
     }
   }
 
@@ -1859,6 +2020,13 @@ export class OfficeState {
     }
   }
 
+  setAgentTaskText(id: number, text: string | undefined): void {
+    const ch = this.characters.get(id)
+    if (ch) {
+      ch.taskText = text
+    }
+  }
+
   showPermissionBubble(id: number): void {
     const ch = this.characters.get(id)
     if (ch) {
@@ -1913,9 +2081,170 @@ export class OfficeState {
     }
   }
 
+  /**
+   * Collision avoidance: when two walking characters contest the same next tile,
+   * the one farther from its destination steps aside (sideways first, then backwards)
+   * and waits for the closer one to pass before resuming.
+   */
+  /** Find a free adjacent tile for a character to dodge to, or null if none found */
+  private findDodgeTile(
+    ch: Character,
+    dc: number, dr: number,
+    walkableSet: Set<string>,
+    occupiedKeys: Set<string>,
+    claimedNext: Map<string, number>,
+  ): { col: number; row: number } | null {
+    const candidates: Array<{ col: number; row: number }> = dc !== 0 || dr !== 0
+      ? [
+          { col: ch.tileCol + dr,  row: ch.tileRow + dc  }, // side A (perpendicular)
+          { col: ch.tileCol - dr,  row: ch.tileRow - dc  }, // side B (perpendicular)
+          { col: ch.tileCol - dc,  row: ch.tileRow - dr  }, // backwards
+        ]
+      : [
+          // No direction info — try all 4 neighbours
+          { col: ch.tileCol + 1, row: ch.tileRow },
+          { col: ch.tileCol - 1, row: ch.tileRow },
+          { col: ch.tileCol,     row: ch.tileRow + 1 },
+          { col: ch.tileCol,     row: ch.tileRow - 1 },
+        ]
+
+    for (const cand of candidates) {
+      const key = `${cand.col},${cand.row}`
+      if (!walkableSet.has(key)) continue
+      if (this.blockedTiles.has(key)) continue
+      if (occupiedKeys.has(key)) continue
+      if (claimedNext.has(key)) continue
+      return cand
+    }
+    return null
+  }
+
+  private resolveWalkConflicts(): void {
+    const allHumanoids: Character[] = []
+    for (const ch of this.characters.values()) {
+      if (ch.matrixEffect || ch.isCat || ch.isLobster || ch.greetLocked) continue
+      if (ch.yieldTimer > 0) continue
+      allHumanoids.push(ch)
+    }
+    if (allHumanoids.length < 2) return
+
+    // Current tile positions of every character (for dodge-target exclusion)
+    const occupiedKeys = new Set<string>()
+    for (const ch of this.characters.values()) {
+      occupiedKeys.add(`${ch.tileCol},${ch.tileRow}`)
+    }
+
+    const walkableSet = new Set<string>(this.walkableTiles.map(t => `${t.col},${t.row}`))
+
+    // claimedNext: tiles that are "taken" — no other character may step into them.
+    // Pre-populate with standing characters' current tiles only.
+    // Walking characters claim their next tile dynamically in Pass 1 (sorted by priority).
+    const claimedNext = new Map<string, number>()
+    for (const ch of allHumanoids) {
+      if (ch.state !== CharacterState.WALK) {
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+      }
+    }
+
+    // ── Pass 1: next-tile conflicts ───────────────────────────────────────────
+    // All walkers (including mid-step), sorted by remaining path length.
+    // Shorter path = closer to destination = higher priority = claims the tile.
+    // Loser is snapped back to current tile and must dodge.
+    const walkers = allHumanoids.filter(
+      ch => ch.state === CharacterState.WALK && !ch.yieldDestination && ch.path.length > 0,
+    )
+    walkers.sort((a, b) => a.path.length - b.path.length)
+
+    for (const ch of walkers) {
+      const next = ch.path[0]
+      const key = `${next.col},${next.row}`
+      if (!claimedNext.has(key)) {
+        // Also claim current tile so no one walks into us from behind
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+        claimedNext.set(key, ch.id)
+        continue
+      }
+      // Tile is taken — snap back to current tile and dodge
+      if (ch.moveProgress > 0) {
+        // Abort mid-step: snap back to the tile we came from
+        ch.x = ch.tileCol * TILE_SIZE + TILE_SIZE / 2
+        ch.y = ch.tileRow * TILE_SIZE + TILE_SIZE / 2
+        ch.moveProgress = 0
+      }
+      const dest = ch.path[ch.path.length - 1]
+      const dc = next.col - ch.tileCol
+      const dr = next.row - ch.tileRow
+      const dodgeTile = this.findDodgeTile(ch, dc, dr, walkableSet, occupiedKeys, claimedNext)
+      if (dodgeTile) {
+        ch.path = [dodgeTile]
+        ch.moveProgress = 0
+        // Face the dodge direction immediately so the character doesn't appear to
+        // move backward while still facing forward.
+        ch.dir = this.directionToward(ch.tileCol, ch.tileRow, dodgeTile.col, dodgeTile.row)
+        ch.yieldDestination = { col: dest.col, row: dest.row }
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+        claimedNext.set(`${dodgeTile.col},${dodgeTile.row}`, ch.id)
+      } else {
+        ch.path = []
+        ch.yieldTimer = 0.5 + Math.random() * 0.4
+        ch.yieldDestination = { col: dest.col, row: dest.row }
+        claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
+      }
+    }
+
+    // ── Pass 2: hard overlap — same tileCol/tileRow right now ────────────────
+    const tileGroups = new Map<string, Character[]>()
+    for (const ch of allHumanoids) {
+      const key = `${ch.tileCol},${ch.tileRow}`
+      const g = tileGroups.get(key)
+      if (g) g.push(ch)
+      else tileGroups.set(key, [ch])
+    }
+
+    for (const group of tileGroups.values()) {
+      if (group.length < 2) continue
+
+      // Highest priority (index 0) stays; others dodge
+      group.sort((a, b) => {
+        const aScore = a.state === CharacterState.WALK ? a.path.length : 9999
+        const bScore = b.state === CharacterState.WALK ? b.path.length : 9999
+        return aScore - bScore
+      })
+
+      for (let i = 1; i < group.length; i++) {
+        const dodger = group[i]
+        if (dodger.yieldTimer > 0 || dodger.yieldDestination) continue
+
+        const dc = dodger.dir === Direction.RIGHT ? 1 : dodger.dir === Direction.LEFT ? -1 : 0
+        const dr = dodger.dir === Direction.DOWN  ? 1 : dodger.dir === Direction.UP   ? -1 : 0
+
+        const dodgeTile = this.findDodgeTile(dodger, dc, dr, walkableSet, occupiedKeys, claimedNext)
+        if (dodgeTile) {
+          if (dodger.state === CharacterState.WALK && dodger.path.length > 0) {
+            const orig = dodger.path[dodger.path.length - 1]
+            dodger.yieldDestination = { col: orig.col, row: orig.row }
+          }
+          dodger.path = [dodgeTile]
+          dodger.moveProgress = 0
+          dodger.state = CharacterState.WALK
+          dodger.frame = 0
+          dodger.frameTimer = 0
+          // Face the dodge direction immediately
+          dodger.dir = this.directionToward(dodger.tileCol, dodger.tileRow, dodgeTile.col, dodgeTile.row)
+          claimedNext.set(`${dodgeTile.col},${dodgeTile.row}`, dodger.id)
+          occupiedKeys.delete(`${dodger.tileCol},${dodger.tileRow}`)
+          occupiedKeys.add(`${dodgeTile.col},${dodgeTile.row}`)
+        } else {
+          dodger.yieldTimer = 0.3 + Math.random() * 0.3
+        }
+      }
+    }
+  }
+
   update(dt: number): void {
     this.ensureGatewaySre()
     this.bugSystem.update(dt, this.bugWorldWidth, this.bugWorldHeight)
+    this.resolveWalkConflicts()
     const toDelete: number[] = []
     const firstIdleHumanoid = this.getFirstIdleHumanoid()
     for (const ch of this.characters.values()) {
@@ -1941,6 +2270,24 @@ export class OfficeState {
         continue
       }
 
+      // Yield timer: character is waiting at dodge tile before resuming
+      if (ch.yieldTimer > 0) {
+        ch.yieldTimer = Math.max(0, ch.yieldTimer - dt)
+        if (ch.yieldTimer === 0 && ch.yieldDestination) {
+          const dest = ch.yieldDestination
+          ch.yieldDestination = null
+          const resumePath = findPath(ch.tileCol, ch.tileRow, dest.col, dest.row, this.tileMap, this.blockedTiles)
+          if (resumePath.length > 0) {
+            ch.path = resumePath
+            ch.moveProgress = 0
+            ch.state = CharacterState.WALK
+            ch.frame = 0
+            ch.frameTimer = 0
+          }
+        }
+        continue // frozen while waiting
+      }
+
       if (ch.systemRoleType === 'gateway_sre' && !ch.greetLocked) {
         this.updateGatewaySreCharacter(ch, dt)
       } else {
@@ -1949,6 +2296,14 @@ export class OfficeState {
         this.withOwnSeatUnblocked(ch, () =>
           updateCharacter(ch, dt, this.walkableTiles, this.seats, this.tileMap, this.blockedTiles, this.interactionPoints)
         )
+      }
+
+      // If character just finished walking to dodge tile, start wait timer
+      if (ch.yieldDestination && ch.state !== CharacterState.WALK && ch.path.length === 0) {
+        ch.yieldTimer = 0.6 + Math.random() * 0.5
+        ch.state = CharacterState.IDLE
+        ch.frame = 0
+        ch.frameTimer = 0
       }
 
       if (ch.isLobster) {

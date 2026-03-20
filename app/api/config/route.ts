@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { getConfigCache, setConfigCache } from "@/lib/config-cache";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
+import { shouldHidePlatformChannel } from "@/lib/platforms";
 
 // 配置文件路径：优先使用 OPENCLAW_HOME 环境变量，否则默认 ~/.openclaw
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
@@ -230,6 +231,25 @@ function getChannelDirectPeerIds(
   return map;
 }
 // 从 IDENTITY.md 读取机器人名字
+function readIdentityEmoji(agentId: string, agentDir?: string, workspace?: string): string | null {
+  const candidates = [
+    agentDir ? path.join(agentDir, "IDENTITY.md") : null,
+    workspace ? path.join(workspace, "IDENTITY.md") : null,
+    path.join(OPENCLAW_DIR, `agents/${agentId}/agent/IDENTITY.md`),
+    path.join(OPENCLAW_DIR, `workspace-${agentId}/IDENTITY.md`),
+    agentId === "main" ? path.join(OPENCLAW_DIR, `workspace/IDENTITY.md`) : null,
+  ].filter(Boolean) as string[];
+
+  for (const p of candidates) {
+    try {
+      const content = fs.readFileSync(p, "utf-8");
+      const match = content.match(/\*\*Emoji:\*\*\s*(\S+)/);
+      if (match?.[1]) return match[1].trim();
+    } catch {}
+  }
+  return null;
+}
+
 function readIdentityName(agentId: string, agentDir?: string, workspace?: string): string | null {
   const candidates = [
     agentDir ? path.join(agentDir, "IDENTITY.md") : null,
@@ -329,12 +349,12 @@ export async function GET() {
     // 从预读的 sessions 数据获取飞书用户 open_id
     const feishuUserOpenIds = getFeishuUserOpenIds(agentIds, sessionsMap);
     const enabledChannelNames: string[] = Object.entries(channels)
-      .filter(([, cfg]) => cfg && typeof cfg === "object" && (cfg as any).enabled !== false)
+      .filter(([channelName, cfg]) => cfg && typeof cfg === "object" && (cfg as any).enabled !== false && !shouldHidePlatformChannel(channelName, channels))
       .map(([channelName]) => channelName);
     const boundChannelNames: string[] = Array.from(new Set(
       bindings
         .map((b: any) => b.match?.channel)
-        .filter((v: any): v is string => typeof v === "string" && v.length > 0)
+        .filter((v: any): v is string => typeof v === "string" && v.length > 0 && !shouldHidePlatformChannel(v, channels))
     ));
     const discoverChannelNames: string[] = Array.from(new Set([...enabledChannelNames, ...boundChannelNames]));
     const directPeerIdsByChannel: Record<string, Record<string, string>> = {};
@@ -349,7 +369,8 @@ export async function GET() {
       const id = agent.id;
       const identityName = readIdentityName(id, agent.agentDir, agent.workspace);
       const name = identityName || agent.name || id;
-      const emoji = agent.identity?.emoji || "🤖";
+      const identityEmoji = readIdentityEmoji(id, agent.agentDir, agent.workspace);
+      const emoji = identityEmoji || agent.identity?.emoji || agent.emoji || "🤖";
       const model = normalizeModelRef(agent.model, defaultModel);
 
       // 查找绑定的平台
@@ -406,7 +427,7 @@ export async function GET() {
         for (const binding of bindings) {
           if (binding?.agentId !== id) continue;
           const channelName = binding?.match?.channel;
-          if (!channelName || channelName === "feishu") continue;
+          if (!channelName || channelName === "feishu" || shouldHidePlatformChannel(channelName, channels)) continue;
           if (seenBindingChannels.has(channelName)) continue;
           seenBindingChannels.add(channelName);
           const botUserId = directPeerIdsByChannel[channelName]?.[id] || null;

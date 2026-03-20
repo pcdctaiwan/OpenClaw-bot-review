@@ -212,6 +212,10 @@ async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeRe
   if (!providerCfg.api) providerCfg.api = "openai-completions";
 
   const timeoutMs = params.timeoutMs ?? DEFAULT_MODEL_PROBE_TIMEOUT_MS;
+  // Kimi providers require temperature=1
+  const isKimiProvider = params.providerId === "kimi-coding" || params.providerId === "moonshot";
+  const temperature = isKimiProvider ? 1 : 0;
+
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(providerCfg.headers || {}),
@@ -225,6 +229,7 @@ async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeRe
       model: params.modelId,
       max_tokens: 8,
       messages: [{ role: "user", content: "Reply with OK." }],
+      temperature,
     };
     const start = Date.now();
     try {
@@ -300,7 +305,7 @@ async function probeModelDirect(params: ProbeModelParams): Promise<DirectProbeRe
       model: params.modelId,
       messages: [{ role: "user", content: "Reply with OK." }],
       max_tokens: 8,
-      temperature: 0,
+      temperature,
     };
     const start = Date.now();
     try {

@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { OPENCLAW_CONFIG_PATH, OPENCLAW_HOME } from "@/lib/openclaw-paths";
 import { parseApiJsonSafely, shouldFallbackToCli, testSessionViaCli } from "@/lib/session-test-fallback";
+import { shouldHidePlatformChannel } from "@/lib/platforms";
 const CONFIG_PATH = OPENCLAW_CONFIG_PATH;
 
 interface DmSessionResult {
@@ -108,14 +109,20 @@ export async function POST() {
     }
 
     const results: DmSessionResult[] = [];
-    const platformsToTest = ["feishu", "discord", "telegram", "whatsapp", "qqbot"];
+    const platformsToTest = Array.from(new Set([
+      ...Object.entries(channels)
+        .filter(([name, cfg]) => cfg && typeof cfg === "object" && (cfg as any).enabled !== false && !shouldHidePlatformChannel(name, channels))
+        .map(([name]) => name),
+      ...bindings
+        .map((b: any) => b?.match?.channel)
+        .filter((name: unknown): name is string => typeof name === "string" && name.length > 0 && !shouldHidePlatformChannel(name, channels)),
+    ]));
 
     for (const agent of agentList) {
       const id = agent.id;
       for (const platform of platformsToTest) {
-        // Check if this agent has this platform configured
         const ch = channels[platform];
-        if (!ch || ch.enabled === false) continue;
+        if (ch && ch.enabled === false) continue;
 
         const isMain = id === "main";
         const hasBinding = bindings.some(

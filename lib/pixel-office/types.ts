@@ -212,6 +212,12 @@ export interface Character {
   isSystemRole?: boolean
   systemRoleType?: 'gateway_sre'
   systemStatus?: 'unknown' | 'healthy' | 'degraded' | 'down'
+  /** Last assigned task text to display above the agent's head */
+  taskText?: string
   /** Walk back to this tile after farewell greeting, then despawn */
   pendingDespawn?: { col: number; row: number } | true
+  /** Seconds remaining while character waits at dodge tile before resuming path */
+  yieldTimer: number
+  /** Original destination to repath to after yield completes */
+  yieldDestination: { col: number; row: number } | null
 }

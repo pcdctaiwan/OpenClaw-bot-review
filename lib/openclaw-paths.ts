@@ -19,6 +19,7 @@ export function getOpenclawPackageCandidates(version = process.version): string[
 
   return uniquePaths([
     process.env.OPENCLAW_PACKAGE_DIR,
+    path.join(home, ".local", "lib", "node_modules", "openclaw"),
     npmPrefix ? path.join(npmPrefix, "node_modules", "openclaw") : undefined,
     path.join(home, ".nvm", "versions", "node", version, "lib", "node_modules", "openclaw"),
     path.join(home, ".fnm", "node-versions", version, "installation", "lib", "node_modules", "openclaw"),

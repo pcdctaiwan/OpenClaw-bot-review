@@ -136,10 +136,12 @@ const translations: Record<Locale, Record<string, string>> = {
 
     // platform
     "platform.feishu": "📱 飛書",
+    "platform.yuanbao": "🤖 元宝",
     "platform.discord": "🎮 Discord",
     "platform.telegram": "✈️ Telegram",
     "platform.whatsapp": "💬 WhatsApp",
     "platform.qqbot": "🐧 QQBot",
+    "platform.wecom": "💼 企業微信",
 
     // time range
     "range.daily": "按日",
@@ -238,6 +240,10 @@ const translations: Record<Locale, Record<string, string>> = {
     "skills.noDesc": "無描述",
     "skills.source.builtin": "內建",
     "skills.source.custom": "自訂",
+    "skills.viewSource": "查看 SKILL.md",
+    "skills.contentTitle": "SKILL.md 內容",
+    "skills.loadingContent": "正在載入技能內容...",
+    "skills.contentLoadFailed": "技能內容載入失敗",
 
     // gateway status
     "gateway.healthy": "Gateway 運作正常",
@@ -418,10 +424,12 @@ const translations: Record<Locale, Record<string, string>> = {
 
     // platform
     "platform.feishu": "📱 飞书",
+    "platform.yuanbao": "🤖 元宝",
     "platform.discord": "🎮 Discord",
     "platform.telegram": "✈️ Telegram",
     "platform.whatsapp": "💬 WhatsApp",
     "platform.qqbot": "🐧 QQBot",
+    "platform.wecom": "💼 企业微信",
 
     // time range
     "range.daily": "按天",
@@ -520,6 +528,10 @@ const translations: Record<Locale, Record<string, string>> = {
     "skills.noDesc": "无描述",
     "skills.source.builtin": "内置",
     "skills.source.custom": "自定义",
+    "skills.viewSource": "查看 SKILL.md",
+    "skills.contentTitle": "SKILL.md 内容",
+    "skills.loadingContent": "正在加载技能内容...",
+    "skills.contentLoadFailed": "技能内容加载失败",
 
     // gateway status
     "gateway.healthy": "Gateway 运行正常",
@@ -700,10 +712,12 @@ const translations: Record<Locale, Record<string, string>> = {
 
     // platform
     "platform.feishu": "📱 Feishu",
+    "platform.yuanbao": "🤖 Yuanbao",
     "platform.discord": "🎮 Discord",
     "platform.telegram": "✈️ Telegram",
     "platform.whatsapp": "💬 WhatsApp",
     "platform.qqbot": "🐧 QQBot",
+    "platform.wecom": "💼 WeCom",
 
     // time range
     "range.daily": "Daily",
@@ -802,6 +816,10 @@ const translations: Record<Locale, Record<string, string>> = {
     "skills.noDesc": "No description",
     "skills.source.builtin": "Built-in",
     "skills.source.custom": "Custom",
+    "skills.viewSource": "View SKILL.md",
+    "skills.contentTitle": "SKILL.md",
+    "skills.loadingContent": "Loading skill content...",
+    "skills.contentLoadFailed": "Failed to load skill content",
 
     // gateway status
     "gateway.healthy": "Gateway is running",
@@ -865,13 +883,26 @@ const I18nContext = createContext<I18nContextType>({
   t: (key) => key,
 });
 
+function detectBrowserLocale(): Locale {
+  const langs = navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const lang of langs) {
+    const l = lang.toLowerCase();
+    if (l.startsWith('zh-tw') || l.startsWith('zh-hant') || l.startsWith('zh-hk') || l.startsWith('zh-mo')) return 'zh-TW';
+    if (l.startsWith('zh')) return 'zh';
+    if (l.startsWith('en')) return 'en';
+  }
+  return 'zh';
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>("zh-TW");
+  const [locale, setLocaleState] = useState<Locale>("zh");
 
   useEffect(() => {
     const saved = localStorage.getItem("locale") as Locale;
     if (saved && (saved === "zh-TW" || saved === "zh" || saved === "en")) {
       setLocaleState(saved);
+    } else {
+      setLocaleState(detectBrowserLocale());
     }
   }, []);
 

@@ -462,8 +462,8 @@ export default function PixelOfficePage() {
     if (!officeReady || !office || cachedAgents.length === 0) return
 
     for (const [agentId, charId] of agentIdMapRef.current) {
-      office.removeAllSubagents(charId)
-      office.removeAgent(charId)
+      office.removeAllSubagentsImmediately(charId)
+      office.removeAgentImmediately(charId)
       agentIdMapRef.current.delete(agentId)
     }
     nextIdRef.current.current = 1
@@ -812,7 +812,8 @@ export default function PixelOfficePage() {
           }
           // Broadcast notification on meaningful state transitions
           if (prev && prev !== agent.state) {
-            if (agent.state === 'working' && prev !== 'working') {
+            // Only show "上班了" when agent comes back from offline (not from idle)
+            if (agent.state === 'working' && prev === 'offline') {
               const bid = Date.now() + Math.random()
               setBroadcasts(b => [...b, { id: bid, emoji: agent.emoji, text: `${agent.emoji} ${agent.name} ${t('pixelOffice.broadcast.online')}` }])
               setTimeout(() => setBroadcasts(b => b.filter(x => x.id !== bid)), 5000)
@@ -891,6 +892,40 @@ export default function PixelOfficePage() {
     const interval = setInterval(refreshGatewayHealthSnapshot, GATEWAY_HEALTH_POLL_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [refreshGatewayHealthSnapshot])
+
+  // Debug helper: expose __pixelOffice on window for console testing
+  const debugCounterRef = useRef(0)
+  useEffect(() => {
+    ;(window as any).__pixelOffice = {
+      addAgents(count = 1) {
+        const office = officeRef.current
+        if (!office) { console.warn('[pixelOffice] office not ready'); return }
+        for (let i = 0; i < count; i++) {
+          debugCounterRef.current++
+          const id = 9000 + debugCounterRef.current
+          office.addAgent(id, undefined, undefined, undefined, undefined, true)
+        }
+        console.log(`[pixelOffice] added ${count} agent(s), ids 9001–${9000 + debugCounterRef.current}`)
+      },
+      clearDebug() {
+        const office = officeRef.current
+        if (!office) return
+        for (let i = 1; i <= debugCounterRef.current; i++) {
+          office.removeAgent(9000 + i)
+        }
+        debugCounterRef.current = 0
+        console.log('[pixelOffice] cleared debug agents')
+      },
+      list() {
+        const office = officeRef.current
+        if (!office) return
+        const rows: any[] = []
+        for (const [id, ch] of office.characters) rows.push({ id, state: ch.state, tile: `${ch.tileCol},${ch.tileRow}` })
+        console.table(rows)
+      },
+    }
+    return () => { delete (window as any).__pixelOffice }
+  }, []) // mount once only
 
   useEffect(() => {
     if (!selectedAgentId) return
@@ -1180,12 +1215,8 @@ export default function PixelOfficePage() {
           return tileX >= f.col && tileX < f.col + entry.footprintW &&
                  tileY >= f.row && tileY < f.row + entry.footprintH
         })) {
-          // Click on PC — open gateway chat for main agent
-          const gw = gatewayRef.current
-          const sessionKey = 'agent:main:main'
-          let chatUrl = buildGatewayUrl(gw.port, '/chat', { session: sessionKey }, gw.host)
-          if (gw.token) chatUrl = buildGatewayUrl(gw.port, '/chat', { session: sessionKey, token: gw.token }, gw.host)
-          window.open(chatUrl, '_blank')
+          // Click on PC — navigate to dashboard settings
+          window.location.href = '/'
         } else if (office.layout.furniture.some(f => {
           if (f.uid !== 'library-r') return false
           const entry = getCatalogEntry(f.type)
@@ -1658,6 +1689,8 @@ export default function PixelOfficePage() {
         })
       }
     }
+    const stateOrder: Record<string, number> = { working: 0, waiting: 1, idle: 2, offline: 3 }
+    expanded.sort((a, b) => (stateOrder[a.state] ?? 9) - (stateOrder[b.state] ?? 9))
     return expanded
   }, [agents])
 
@@ -1781,22 +1814,7 @@ export default function PixelOfficePage() {
             </button>
           </div>
         </div>
-        <div className="md:hidden overflow-x-auto pb-1">
-          {displayAgents.length === 0 ? (
-            <div className="text-[var(--text-muted)] text-sm">{t('common.noData')}</div>
-          ) : (
-            <div className="flex gap-2 min-w-full snap-x snap-mandatory">
-              {mobileAgentPages.map((page, pageIndex) => (
-                <div key={`mobile-agent-page-${pageIndex}`} className="grid grid-cols-3 grid-rows-3 gap-2 min-w-full h-[8.4rem] shrink-0 snap-start">
-                  {page.map((agent) => renderAgentChip(agent, true))}
-                  {page.length < 9 && Array.from({ length: 9 - page.length }).map((_, i) => (
-                    <div key={`mobile-agent-page-${pageIndex}-placeholder-${i}`} className="rounded-lg border border-transparent" />
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+{/* Mobile agent list moved to canvas overlay below */}
         <div className="hidden md:flex gap-2 flex-1 flex-wrap">
           {displayAgents.map((agent) => renderAgentChip(agent))}
           {displayAgents.length === 0 && (
@@ -1821,6 +1839,15 @@ export default function PixelOfficePage() {
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#1a1a2e]/85 pointer-events-none">
             <div className="px-4 py-2 rounded-lg border border-[var(--border)] bg-[var(--card)] text-sm text-[var(--text-muted)]">
               {t('common.loading')}
+            </div>
+          </div>
+        )}
+
+        {/* Mobile agent list overlay at bottom of canvas */}
+        {isMobileViewport && (
+          <div className="absolute bottom-0 left-0 right-0 z-10 px-2 pb-1 pt-1 bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar pointer-events-auto">
+              {displayAgents.map((agent) => renderAgentChip(agent, true))}
             </div>
           </div>
         )}

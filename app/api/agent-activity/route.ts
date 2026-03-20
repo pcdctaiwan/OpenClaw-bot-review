@@ -68,6 +68,7 @@ export interface AgentActivity {
   lastActive: number
   subagents?: SubagentInfo[]
   cronJobs?: CronJobInfo[]
+  lastTask?: string
 }
 
 type AgentConfigEntry = {
@@ -821,6 +822,144 @@ async function parseCronJobs(agentSessionsDir: string, cronJobsForAgent: CronSto
   return cronJobs
 }
 
+/**
+ * Extract the actual user-typed text from a session message block.
+ *
+ * Handles three formats:
+ * 1. Subagent spawn: contains "[Subagent Task]: ..." — extract what follows the label
+ * 2. Channel message (Telegram etc.): injected "Conversation info" + "Sender" code fences
+ *    before the real text — extract what comes after the last ``` fence
+ * 3. Fallback: strip XML context blocks and leading timestamp
+ */
+function extractUserText(rawText: string): string | null {
+  // Strip XML context injections first (relevant-memories etc.)
+  const noXml = rawText.replace(/<[a-z][\s\S]*?<\/[a-z][^>]*>/gi, '')
+
+  // Strategy 1: subagent task — "[Subagent Task]: ..."
+  const subagentMatch = noXml.match(/\[Subagent Task\]:\s*([\s\S]+)/)
+  if (subagentMatch) {
+    return subagentMatch[1].replace(/\s+/g, ' ').trim().slice(0, 500)
+  }
+
+  // Strategy 2: channel message — text after last ``` fence
+  const lastFence = rawText.lastIndexOf('```')
+  if (lastFence !== -1) {
+    const afterFence = rawText.slice(lastFence + 3).trim()
+    if (afterFence.length > 3) {
+      return afterFence.replace(/\s+/g, ' ').trim().slice(0, 500)
+    }
+  }
+
+  // Strategy 3: strip timestamp prefix and return remaining
+  const noTs = noXml.replace(/^\[[^\]]{5,40}\]\s*/, '').trim()
+  const text = noTs.replace(/\s+/g, ' ').trim()
+  return text.length > 5 ? text.slice(0, 500) : null
+}
+
+/**
+ * Extract the last user message text from a session file — used as the agent's "last task".
+ *
+ * Priority:
+ * 1. The original subagent spawn task ("[Subagent Task]: ...") — scan from the start
+ * 2. Most recent real user message — scan from the end, skip system notifications
+ */
+async function extractLastUserTask(sessionFilePath: string): Promise<string | null> {
+  try {
+    const content = await fs.readFile(sessionFilePath, 'utf8')
+    const allLines = content.split('\n').filter(l => l.trim())
+
+    // Pass 1: find the first [Subagent Task] (set at spawn time, stable throughout session)
+    for (const line of allLines.slice(0, 40)) {
+      try {
+        const record = JSON.parse(line)
+        if (record.type !== 'message' || !record.message) continue
+        if (record.message.role !== 'user') continue
+        const blocks = Array.isArray(record.message.content) ? record.message.content : []
+        for (const block of blocks) {
+          if (block?.type !== 'text' || typeof block.text !== 'string') continue
+          if (!block.text.includes('[Subagent Task]')) continue
+          const text = extractUserText(block.text)
+          if (text) return text
+        }
+      } catch { /* skip */ }
+    }
+
+    // Pass 2: most recent real user message (direct agents, e.g. main)
+    const skipPhrases = ['A completed subagent task', 'Action:\n', 'END_UNTRUSTED_CHILD_RESULT', 'Continue where you left off']
+    const recent = allLines.slice(-80)
+    for (let i = recent.length - 1; i >= 0; i--) {
+      try {
+        const record = JSON.parse(recent[i])
+        if (record.type !== 'message' || !record.message) continue
+        if (record.message.role !== 'user') continue
+        const blocks = Array.isArray(record.message.content) ? record.message.content : []
+        for (const block of blocks) {
+          if (block?.type !== 'text' || typeof block.text !== 'string') continue
+          if (skipPhrases.some(p => block.text.includes(p))) continue
+          const text = extractUserText(block.text)
+          if (text) return text
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* ignore */ }
+  return null
+}
+
+/**
+ * Read last N lines of a JSONL session file and determine the agent's true working state.
+ *
+ * Logic:
+ *  - Last message role is 'toolResult'  → working (parent about to process tool output)
+ *  - Last assistant stopReason is 'toolUse' → working (tool call in flight)
+ *  - Last assistant stopReason is 'stop'   → idle (turn completed, waiting for next input)
+ *  - Fallback: time-based heuristic
+ */
+async function detectStateFromSession(
+  sessionFilePath: string,
+  now: number,
+  lastActive: number,
+): Promise<'idle' | 'working' | 'offline'> {
+  if (lastActive === 0) return 'offline'
+
+  const OFFLINE_MS = 10 * 60 * 1000   // idle > 10 min → offline
+  const WORKING_MAX_MS = 10 * 60 * 1000 // working > 10 min → force idle
+  const timeDiff = now - lastActive
+
+  // Last activity > 10 min ago → offline regardless of session content
+  if (timeDiff > OFFLINE_MS) return 'offline'
+
+  try {
+    const content = await fs.readFile(sessionFilePath, 'utf8')
+    const lines = content.split('\n').filter(l => l.trim()).slice(-30)
+
+    let lastRole: string | null = null
+    let lastStopReason: string | null = null
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const record = JSON.parse(lines[i])
+        if (record.type !== 'message' || !record.message) continue
+        const { role, stopReason } = record.message
+        if (!lastRole) lastRole = role ?? null
+        if (role === 'assistant') {
+          lastStopReason = stopReason ?? null
+          break
+        }
+      } catch { /* skip malformed line */ }
+    }
+
+    // Work completed → immediately idle
+    if (lastStopReason === 'stop') return 'idle'
+    // Still processing — but cap at 10 min, after that force idle
+    if (lastRole === 'user' || lastRole === 'toolResult' || lastStopReason === 'toolUse') {
+      return timeDiff <= WORKING_MAX_MS ? 'working' : 'idle'
+    }
+  } catch { /* file unreadable — fall through */ }
+
+  // Fallback within the 10-min window
+  return timeDiff <= 2 * 60 * 1000 ? 'working' : 'idle'
+}
+
 export async function GET() {
   const configPath = OPENCLAW_CONFIG_PATH
   const agentsDir = OPENCLAW_AGENTS_DIR
@@ -839,34 +978,99 @@ export async function GET() {
 
         for (const agent of agentList) {
           let lastActive = 0
+          let mostRecentSessionFile: string | null = null
           let agentSessionsDir = ''
 
+          // Resolve emoji: IDENTITY.md > agent.json > openclaw.json > default
+          let agentJsonEmoji: string | undefined
           if (existsSync(agentsDir)) {
-            agentSessionsDir = path.join(agentsDir, agent.id, 'sessions')
-            if (existsSync(agentSessionsDir)) {
-              try {
-                const files = await fs.readdir(agentSessionsDir)
-                for (const file of files) {
-                  const filePath = path.join(agentSessionsDir, file)
-                  const stat = await fs.stat(filePath)
-                  if (stat.mtimeMs > lastActive) {
-                    lastActive = stat.mtimeMs
+            // 1. Read from workspace IDENTITY.md ("- **Emoji:** 🌸")
+            const workspaceDir = typeof (agent as any).workspace === 'string' ? (agent as any).workspace : null
+            if (workspaceDir) {
+              const identityPath = path.join(workspaceDir, 'IDENTITY.md')
+              if (existsSync(identityPath)) {
+                try {
+                  const identityRaw = await fs.readFile(identityPath, 'utf8')
+                  const m = identityRaw.match(/\*\*Emoji:\*\*\s*(\S+)/)
+                  if (m?.[1]) agentJsonEmoji = m[1]
+                } catch { /* ignore */ }
+              }
+            }
+            // 2. Fallback: read from agent's agent.json emoji field
+            if (!agentJsonEmoji) {
+              const agentJsonPath = path.join(agentsDir, agent.id, 'agent', 'agent.json')
+              if (existsSync(agentJsonPath)) {
+                try {
+                  const raw = await fs.readFile(agentJsonPath, 'utf8')
+                  const parsed = JSON.parse(raw)
+                  if (typeof parsed?.emoji === 'string' && parsed.emoji.trim()) {
+                    agentJsonEmoji = parsed.emoji.trim()
                   }
-                }
-              } catch {
-                // Ignore
+                } catch { /* ignore */ }
               }
             }
           }
 
+          if (existsSync(agentsDir)) {
+            agentSessionsDir = path.join(agentsDir, agent.id, 'sessions')
+            if (existsSync(agentSessionsDir)) {
+              // Use JSONL file mtime for lastActive (reliable, updates on every message write).
+              // Also build a map from sessionId → filePath using sessions.json, so we can
+              // pick the correct file for content-based state detection.
+              const sessionIdToFile = new Map<string, string>()
+              try {
+                const sessionsIndexPath = path.join(agentSessionsDir, 'sessions.json')
+                if (existsSync(sessionsIndexPath)) {
+                  const raw = await fs.readFile(sessionsIndexPath, 'utf8')
+                  const index = JSON.parse(raw) as Record<string, { sessionId?: string }>
+                  for (const [, meta] of Object.entries(index)) {
+                    if (typeof meta.sessionId === 'string') {
+                      sessionIdToFile.set(meta.sessionId, path.join(agentSessionsDir, `${meta.sessionId}.jsonl`))
+                    }
+                  }
+                }
+              } catch { /* ignore */ }
+
+              try {
+                const files = await fs.readdir(agentSessionsDir)
+                for (const file of files) {
+                  if (!file.endsWith('.jsonl')) continue
+                  const filePath = path.join(agentSessionsDir, file)
+                  const stat = await fs.stat(filePath)
+                  if (stat.mtimeMs > lastActive) {
+                    lastActive = stat.mtimeMs
+                    mostRecentSessionFile = filePath
+                  }
+                }
+              } catch { /* ignore */ }
+
+              // Prefer the sessions.json-mapped file over raw scan when available
+              // (ensures we read a proper session, not a probe or temp file)
+              if (mostRecentSessionFile) {
+                const sessionId = path.basename(mostRecentSessionFile, '.jsonl')
+                if (!sessionIdToFile.has(sessionId)) {
+                  // Most-recent file is not in sessions.json — find best known session by mtime
+                  let bestMtime = 0
+                  for (const [, fp] of sessionIdToFile) {
+                    try {
+                      const s = await fs.stat(fp)
+                      if (s.mtimeMs > bestMtime) { bestMtime = s.mtimeMs; mostRecentSessionFile = fp }
+                    } catch { /* ignore */ }
+                  }
+                }
+              }
+            }
+          }
+
+          // Determine state from session content (falls back to time-based)
           let state: 'idle' | 'working' | 'waiting' | 'offline'
-          const timeDiff = now - lastActive
-          if (lastActive === 0 || timeDiff > 10 * 60 * 1000) {
-            state = 'offline'
-          } else if (timeDiff <= 2 * 60 * 1000) {
-            state = 'working'
+          if (mostRecentSessionFile && existsSync(mostRecentSessionFile)) {
+            state = await detectStateFromSession(mostRecentSessionFile, now, lastActive)
           } else {
-            state = 'idle'
+            const timeDiff = now - lastActive
+            if (lastActive === 0 || timeDiff > 10 * 60 * 1000) state = 'offline'
+            else if (timeDiff <= 2 * 60 * 1000) state = 'working'
+            else state = 'idle'
           }
 
           // Parse subagents for online agents
@@ -882,14 +1086,21 @@ export async function GET() {
             if (cronJobs.length === 0) cronJobs = undefined
           }
 
+          // Extract last user task for working agents
+          let lastTask: string | undefined
+          if (state === 'working' && mostRecentSessionFile && existsSync(mostRecentSessionFile)) {
+            lastTask = (await extractLastUserTask(mostRecentSessionFile)) ?? undefined
+          }
+
           agents.push({
             agentId: agent.id,
             name: agent.name || agent.id,
-            emoji: agent.identity?.emoji || agent.emoji || '🤖',
+            emoji: agentJsonEmoji || agent.identity?.emoji || agent.emoji || '🤖',
             state,
             lastActive,
             subagents,
             cronJobs,
+            lastTask,
           })
         }
       }

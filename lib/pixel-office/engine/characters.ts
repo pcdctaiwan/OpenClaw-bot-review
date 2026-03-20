@@ -103,6 +103,8 @@ export function createCharacter(
     codeSnippets: [],
     photoComments: [],
     isViewingPhoto: false,
+    yieldTimer: 0,
+    yieldDestination: null,
   }
 }
 
@@ -366,8 +368,8 @@ export function updateCharacter(
         ch.moveProgress = 0
       }
 
-      // If became active while wandering, repath to seat (skip if under greeting control)
-      if (ch.isActive && ch.seatId && !ch.greetLocked) {
+      // If became active while wandering, repath to seat (skip if under greeting control or yielding)
+      if (ch.isActive && ch.seatId && !ch.greetLocked && !ch.yieldDestination) {
         const seat = seats.get(ch.seatId)
         if (seat) {
           const lastStep = ch.path[ch.path.length - 1]

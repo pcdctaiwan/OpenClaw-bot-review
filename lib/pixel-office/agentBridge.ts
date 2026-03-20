@@ -17,6 +17,7 @@ export interface AgentActivity {
   toolStatus?: string
   lastActive: number
   subagents?: SubagentInfo[]
+  lastTask?: string
 }
 
 /** Track which subagent keys were active last sync, per parent agent */
@@ -57,29 +58,38 @@ export function syncAgentsToOffice(
     }
 
     let charId = agentIdMap.get(activity.agentId)
+    if (charId !== undefined && !office.characters.has(charId)) {
+      agentIdMap.delete(activity.agentId)
+      charId = undefined
+    }
     if (charId === undefined) {
       charId = nextIdRef.current++
       agentIdMap.set(activity.agentId, charId)
-      // Spawn at door if agent was previously offline or is brand new
+      // 只有從 offline 恢復時才從門口走進來；
+      // 頁面初始載入（isNew）時直接放到座位，避免讓使用者以為角色剛去摸魚回來
       const wasOffline = prevAgentStates.get(activity.agentId) === 'offline'
-      const isNew = !prevAgentStates.has(activity.agentId)
-      office.addAgent(charId, undefined, undefined, undefined, undefined, wasOffline || isNew)
+      office.addAgent(charId, undefined, undefined, undefined, undefined, wasOffline)
     }
 
-    // Set label (agent name with id in parentheses)
+    // Set label, avoiding duplicated values like "main (main)"
     const ch = office.characters.get(charId)
     if (ch) {
-      ch.label = activity.name ? `${activity.name} (${activity.agentId})` : activity.agentId
+      const displayName = activity.name?.trim()
+      ch.label = displayName && displayName !== activity.agentId
+        ? `${displayName} (${activity.agentId})`
+        : activity.agentId
     }
 
     switch (activity.state) {
       case 'working':
         office.setAgentActive(charId, true)
         office.setAgentTool(charId, activity.currentTool || null)
+        office.setAgentTaskText(charId, activity.lastTask)
         break
       case 'idle':
         office.setAgentActive(charId, false)
         office.setAgentTool(charId, null)
+        office.setAgentTaskText(charId, undefined)
         break
       case 'waiting':
         office.setAgentActive(charId, true)
