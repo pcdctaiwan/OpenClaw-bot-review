@@ -658,9 +658,14 @@ async function detectStateFromSession(
   now: number,
   lastActive: number,
 ): Promise<'idle' | 'working' | 'offline'> {
-  const OFFLINE_MS = 10 * 60 * 1000
+  if (lastActive === 0) return 'offline'
+
+  const OFFLINE_MS = 10 * 60 * 1000   // idle > 10 min → offline
+  const WORKING_MAX_MS = 10 * 60 * 1000 // working > 10 min → force idle
   const timeDiff = now - lastActive
-  if (lastActive === 0 || timeDiff > OFFLINE_MS) return 'offline'
+
+  // Last activity > 10 min ago → offline regardless of session content
+  if (timeDiff > OFFLINE_MS) return 'offline'
 
   try {
     const content = await fs.readFile(sessionFilePath, 'utf8')
@@ -682,17 +687,15 @@ async function detectStateFromSession(
       } catch { /* skip malformed line */ }
     }
 
-    // User message is the last written record → agent is generating a response right now
-    if (lastRole === 'user') return 'working'
-    // toolResult as the latest message → agent is processing the tool output
-    if (lastRole === 'toolResult') return 'working'
-    // Agent called a tool and is waiting for the result
-    if (lastStopReason === 'toolUse') return 'working'
-    // Agent completed its turn — it's now idle
+    // Work completed → immediately idle
     if (lastStopReason === 'stop') return 'idle'
+    // Still processing — but cap at 10 min, after that force idle
+    if (lastRole === 'user' || lastRole === 'toolResult' || lastStopReason === 'toolUse') {
+      return timeDiff <= WORKING_MAX_MS ? 'working' : 'idle'
+    }
   } catch { /* file unreadable — fall through */ }
 
-  // Fallback: time-based (no session content available)
+  // Fallback within the 10-min window
   return timeDiff <= 2 * 60 * 1000 ? 'working' : 'idle'
 }
 
@@ -715,6 +718,36 @@ export async function GET() {
           let lastActive = 0
           let mostRecentSessionFile: string | null = null
           let agentSessionsDir = ''
+
+          // Resolve emoji: IDENTITY.md > agent.json > openclaw.json > default
+          let agentJsonEmoji: string | undefined
+          if (existsSync(agentsDir)) {
+            // 1. Read from workspace IDENTITY.md ("- **Emoji:** 🌸")
+            const workspaceDir = typeof (agent as any).workspace === 'string' ? (agent as any).workspace : null
+            if (workspaceDir) {
+              const identityPath = path.join(workspaceDir, 'IDENTITY.md')
+              if (existsSync(identityPath)) {
+                try {
+                  const identityRaw = await fs.readFile(identityPath, 'utf8')
+                  const m = identityRaw.match(/\*\*Emoji:\*\*\s*(\S+)/)
+                  if (m?.[1]) agentJsonEmoji = m[1]
+                } catch { /* ignore */ }
+              }
+            }
+            // 2. Fallback: read from agent's agent.json emoji field
+            if (!agentJsonEmoji) {
+              const agentJsonPath = path.join(agentsDir, agent.id, 'agent', 'agent.json')
+              if (existsSync(agentJsonPath)) {
+                try {
+                  const raw = await fs.readFile(agentJsonPath, 'utf8')
+                  const parsed = JSON.parse(raw)
+                  if (typeof parsed?.emoji === 'string' && parsed.emoji.trim()) {
+                    agentJsonEmoji = parsed.emoji.trim()
+                  }
+                } catch { /* ignore */ }
+              }
+            }
+          }
 
           if (existsSync(agentsDir)) {
             agentSessionsDir = path.join(agentsDir, agent.id, 'sessions')
@@ -794,7 +827,7 @@ export async function GET() {
           agents.push({
             agentId: agent.id,
             name: agent.name || agent.id,
-            emoji: agent.identity?.emoji || agent.emoji || '🤖',
+            emoji: agentJsonEmoji || agent.identity?.emoji || agent.emoji || '🤖',
             state,
             lastActive,
             subagents,

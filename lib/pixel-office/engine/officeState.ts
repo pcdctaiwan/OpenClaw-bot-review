@@ -399,6 +399,8 @@ interface GreetingSequence {
   isExit: boolean
   /** Tile to walk back to after farewell, before despawning */
   exitReturnPos: { col: number; row: number } | null
+  /** True when child arrived at greeting tile but MainAgent wasn't physically present */
+  parentAbsent?: boolean
 }
 
 export class OfficeState {
@@ -1091,6 +1093,14 @@ export class OfficeState {
               parent.state = CharacterState.IDLE
               child.dir = this.directionToward(child.tileCol, child.tileRow, parent.tileCol, parent.tileRow)
               parent.dir = this.directionToward(parent.tileCol, parent.tileRow, child.tileCol, child.tileRow)
+              // Detect if parent is not physically nearby (wandered away from greeting tile)
+              const distToParent = Math.abs(parent.tileCol - child.tileCol) + Math.abs(parent.tileRow - child.tileRow)
+              if (seq.isExit && distToParent > 3) {
+                seq.parentAbsent = true
+              }
+            } else {
+              // Parent character doesn't exist
+              if (seq.isExit) seq.parentAbsent = true
             }
             seq.phase = 'pause'
             seq.timer = 1.0
@@ -1169,13 +1179,8 @@ export class OfficeState {
 
           if (seq.isExit) {
             child.bubbleType = null
-            const walkBack = this.findExitWalkPath(child, seq.exitReturnPos)
-            if (walkBack) {
-              child.path = walkBack.path
-              child.state = CharacterState.WALK
-              child.moveProgress = 0
-              child.pendingDespawn = walkBack.target
-            } else {
+            // After farewell (whether MainAgent was present or not), walk to bottom-right corner
+            if (!this.walkToBottomRightThenDespawn(child)) {
               child.matrixEffect = 'despawn'
               child.matrixEffectTimer = 0
               child.matrixEffectSeeds = matrixEffectSeeds()
@@ -1229,6 +1234,38 @@ export class OfficeState {
     )
     if (!sofa) return null
     return this.findClosestWalkable(sofa.col, sofa.row)
+  }
+
+  /** Find the walkable tile closest to the bottom-right corner of the map */
+  private findBottomRightCornerTile(): { col: number; row: number } | null {
+    if (this.walkableTiles.length === 0) return null
+    // Bottom-right in tile space = max col + max row
+    const maxCol = Math.max(...this.walkableTiles.map((t) => t.col))
+    const maxRow = Math.max(...this.walkableTiles.map((t) => t.row))
+    return this.findClosestWalkable(maxCol, maxRow)
+  }
+
+  /**
+   * Walk character to the bottom-right corner then despawn.
+   * Unlike findExitWalkPath, accepts any path length >= 1 so nearby agents still move.
+   */
+  private walkToBottomRightThenDespawn(ch: Character): boolean {
+    const corner = this.findBottomRightCornerTile()
+    if (!corner) return false
+    if (corner.col === ch.tileCol && corner.row === ch.tileRow) {
+      // Already there — despawn directly
+      ch.matrixEffect = 'despawn'
+      ch.matrixEffectTimer = 0
+      ch.matrixEffectSeeds = matrixEffectSeeds()
+      return true
+    }
+    const path = findPath(ch.tileCol, ch.tileRow, corner.col, corner.row, this.tileMap, this.blockedTiles)
+    if (path.length === 0) return false
+    ch.path = path
+    ch.state = CharacterState.WALK
+    ch.moveProgress = 0
+    ch.pendingDespawn = corner
+    return true
   }
 
   /**
@@ -1768,14 +1805,8 @@ export class OfficeState {
       // Stash the return position until the greeting actually starts
       if (exitReturnPos) this.exitReturnStash.set(id, exitReturnPos)
     } else {
-      // No MainAgent reachable — walk back directly then despawn
-      const walkBack = this.findExitWalkPath(ch, exitReturnPos)
-      if (walkBack) {
-        ch.pendingDespawn = walkBack.target
-        ch.path = walkBack.path
-        ch.state = CharacterState.WALK
-        ch.moveProgress = 0
-      } else {
+      // No MainAgent reachable — walk to bottom-right corner then despawn
+      if (!this.walkToBottomRightThenDespawn(ch)) {
         ch.matrixEffect = 'despawn'
         ch.matrixEffectTimer = 0
         ch.matrixEffectSeeds = matrixEffectSeeds()
@@ -1842,9 +1873,12 @@ export class OfficeState {
               continue
             }
           }
-          ch.matrixEffect = 'despawn'
-          ch.matrixEffectTimer = 0
-          ch.matrixEffectSeeds = matrixEffectSeeds()
+          // No greeting path — walk to bottom-right corner then despawn
+          if (!this.walkToBottomRightThenDespawn(ch)) {
+            ch.matrixEffect = 'despawn'
+            ch.matrixEffectTimer = 0
+            ch.matrixEffectSeeds = matrixEffectSeeds()
+          }
         }
         this.subagentMeta.delete(id)
         if (this.selectedAgentId === id) this.selectedAgentId = null
@@ -2107,6 +2141,9 @@ export class OfficeState {
       if (dodgeTile) {
         ch.path = [dodgeTile]
         ch.moveProgress = 0
+        // Face the dodge direction immediately so the character doesn't appear to
+        // move backward while still facing forward.
+        ch.dir = this.directionToward(ch.tileCol, ch.tileRow, dodgeTile.col, dodgeTile.row)
         ch.yieldDestination = { col: dest.col, row: dest.row }
         claimedNext.set(`${ch.tileCol},${ch.tileRow}`, ch.id)
         claimedNext.set(`${dodgeTile.col},${dodgeTile.row}`, ch.id)
@@ -2155,6 +2192,8 @@ export class OfficeState {
           dodger.state = CharacterState.WALK
           dodger.frame = 0
           dodger.frameTimer = 0
+          // Face the dodge direction immediately
+          dodger.dir = this.directionToward(dodger.tileCol, dodger.tileRow, dodgeTile.col, dodgeTile.row)
           claimedNext.set(`${dodgeTile.col},${dodgeTile.row}`, dodger.id)
           occupiedKeys.delete(`${dodger.tileCol},${dodger.tileRow}`)
           occupiedKeys.add(`${dodgeTile.col},${dodgeTile.row}`)

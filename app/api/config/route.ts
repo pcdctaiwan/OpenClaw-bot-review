@@ -232,6 +232,25 @@ function getChannelDirectPeerIds(
   return map;
 }
 // 从 IDENTITY.md 读取机器人名字
+function readIdentityEmoji(agentId: string, agentDir?: string, workspace?: string): string | null {
+  const candidates = [
+    agentDir ? path.join(agentDir, "IDENTITY.md") : null,
+    workspace ? path.join(workspace, "IDENTITY.md") : null,
+    path.join(OPENCLAW_DIR, `agents/${agentId}/agent/IDENTITY.md`),
+    path.join(OPENCLAW_DIR, `workspace-${agentId}/IDENTITY.md`),
+    agentId === "main" ? path.join(OPENCLAW_DIR, `workspace/IDENTITY.md`) : null,
+  ].filter(Boolean) as string[];
+
+  for (const p of candidates) {
+    try {
+      const content = fs.readFileSync(p, "utf-8");
+      const match = content.match(/\*\*Emoji:\*\*\s*(\S+)/);
+      if (match?.[1]) return match[1].trim();
+    } catch {}
+  }
+  return null;
+}
+
 function readIdentityName(agentId: string, agentDir?: string, workspace?: string): string | null {
   const candidates = [
     agentDir ? path.join(agentDir, "IDENTITY.md") : null,
@@ -354,7 +373,8 @@ export async function GET() {
       const id = agent.id;
       const identityName = readIdentityName(id, agent.agentDir, agent.workspace);
       const name = identityName || agent.name || id;
-      const emoji = agent.identity?.emoji || "🤖";
+      const identityEmoji = readIdentityEmoji(id, agent.agentDir, agent.workspace);
+      const emoji = identityEmoji || agent.identity?.emoji || agent.emoji || "🤖";
       const model = normalizeModelRef(agent.model, defaultModel);
 
       // 查找绑定的平台

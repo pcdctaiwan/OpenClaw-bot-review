@@ -134,3 +134,6 @@ body {
   border-top: 1px solid var(--border);
   padding: 12px 16px;
 }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
