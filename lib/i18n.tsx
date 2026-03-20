@@ -883,6 +883,17 @@ const I18nContext = createContext<I18nContextType>({
   t: (key) => key,
 });
 
+function detectBrowserLocale(): Locale {
+  const langs = navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const lang of langs) {
+    const l = lang.toLowerCase();
+    if (l.startsWith('zh-tw') || l.startsWith('zh-hant') || l.startsWith('zh-hk') || l.startsWith('zh-mo')) return 'zh-TW';
+    if (l.startsWith('zh')) return 'zh';
+    if (l.startsWith('en')) return 'en';
+  }
+  return 'zh';
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("zh");
 
@@ -890,6 +901,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem("locale") as Locale;
     if (saved && (saved === "zh-TW" || saved === "zh" || saved === "en")) {
       setLocaleState(saved);
+    } else {
+      setLocaleState(detectBrowserLocale());
     }
   }, []);
 
