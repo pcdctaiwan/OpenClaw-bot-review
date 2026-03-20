@@ -594,7 +594,7 @@ export function renderScene(
       })
     }
 
-    // Task text bubble: scrolling marquee above the agent's head when working
+    // Task text bubble: scrolling marquee above (or below if near top) the agent's head
     if (ch.taskText && ch.isActive && ch.state === CharacterState.TYPE && !ch.isSubagent) {
       const taskX = Math.round(offsetX + ch.x * zoom)
       const labelFontSize = Math.max(12, Math.round(5.25 * zoom))
@@ -602,9 +602,13 @@ export function renderScene(
       const padX = 5 * zoom
       const padY = 3 * zoom
       const bubbleH = taskFontSize + padY * 2
-      const bubbleW = Math.round(72 * zoom)  // fixed width window
-      const boxX = taskX - bubbleW / 2
-      const boxY = drawY - 2 * zoom - labelFontSize - 4 * zoom - bubbleH - 4 * zoom
+      const bubbleW = Math.round(72 * zoom)
+      const boxX = Math.max(2, Math.min(taskX - bubbleW / 2, (ctx.canvas.width - bubbleW - 2)))
+      const idealBoxY = drawY - 2 * zoom - labelFontSize - 4 * zoom - bubbleH - 4 * zoom
+      // If bubble would be clipped by top edge, flip it below the character instead
+      const belowY = drawY + cached.height + labelFontSize + 4 * zoom
+      const tailUp = idealBoxY >= 4  // tail points down when bubble is above, up when below
+      const boxY = idealBoxY >= 4 ? idealBoxY : belowY
       const fullText = ch.taskText
       drawables.push({
         zY: charZY + 0.2,
@@ -612,30 +616,39 @@ export function renderScene(
           c.save()
           c.font = `${taskFontSize}px sans-serif`
           const fullW = c.measureText(fullText).width
-          // Scroll speed: pixels per ms. Pause at start/end with a gap.
           const gap = bubbleW * 0.5
           const cycle = fullW + gap
-          const speed = 30 // px/s at zoom=1, scaled below
+          const speed = 30
           const scrollPx = ((Date.now() / 1000 * speed * zoom) % cycle)
           const textX = boxX + padX + (fullW > bubbleW - padX * 2 ? gap - scrollPx : 0)
 
-          // Bubble background
           const r = 3 * zoom
+          const tailW = 5 * zoom
           c.beginPath()
           c.moveTo(boxX + r, boxY)
           c.lineTo(boxX + bubbleW - r, boxY)
           c.arcTo(boxX + bubbleW, boxY, boxX + bubbleW, boxY + r, r)
           c.lineTo(boxX + bubbleW, boxY + bubbleH - r)
           c.arcTo(boxX + bubbleW, boxY + bubbleH, boxX + bubbleW - r, boxY + bubbleH, r)
-          // Tail pointing down
-          const tailW = 5 * zoom
-          c.lineTo(taskX + tailW, boxY + bubbleH)
-          c.lineTo(taskX, boxY + bubbleH + 4 * zoom)
-          c.lineTo(taskX - tailW, boxY + bubbleH)
+          if (tailUp) {
+            // Tail at bottom pointing down toward label
+            c.lineTo(taskX + tailW, boxY + bubbleH)
+            c.lineTo(taskX, boxY + bubbleH + 4 * zoom)
+            c.lineTo(taskX - tailW, boxY + bubbleH)
+          }
           c.lineTo(boxX + r, boxY + bubbleH)
           c.arcTo(boxX, boxY + bubbleH, boxX, boxY + bubbleH - r, r)
-          c.lineTo(boxX, boxY + r)
-          c.arcTo(boxX, boxY, boxX + r, boxY, r)
+          if (!tailUp) {
+            // Tail at top pointing up toward character
+            c.lineTo(boxX, boxY + r)
+            c.arcTo(boxX, boxY, boxX + r, boxY, r)
+            c.lineTo(taskX - tailW, boxY)
+            c.lineTo(taskX, boxY - 4 * zoom)
+            c.lineTo(taskX + tailW, boxY)
+          } else {
+            c.lineTo(boxX, boxY + r)
+            c.arcTo(boxX, boxY, boxX + r, boxY, r)
+          }
           c.closePath()
           c.fillStyle = 'rgba(15,23,42,0.88)'
           c.fill()
@@ -643,7 +656,6 @@ export function renderScene(
           c.lineWidth = zoom
           c.stroke()
 
-          // Clip to bubble interior and draw scrolling text
           c.beginPath()
           c.rect(boxX + padX, boxY, bubbleW - padX * 2, bubbleH)
           c.clip()

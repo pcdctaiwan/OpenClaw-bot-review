@@ -1814,22 +1814,7 @@ export default function PixelOfficePage() {
             </button>
           </div>
         </div>
-        <div className="md:hidden overflow-x-auto pb-1">
-          {displayAgents.length === 0 ? (
-            <div className="text-[var(--text-muted)] text-sm">{t('common.noData')}</div>
-          ) : (
-            <div className="flex gap-2 min-w-full snap-x snap-mandatory">
-              {mobileAgentPages.map((page, pageIndex) => (
-                <div key={`mobile-agent-page-${pageIndex}`} className="grid grid-cols-3 grid-rows-3 gap-2 min-w-full h-[8.4rem] shrink-0 snap-start">
-                  {page.map((agent) => renderAgentChip(agent, true))}
-                  {page.length < 9 && Array.from({ length: 9 - page.length }).map((_, i) => (
-                    <div key={`mobile-agent-page-${pageIndex}-placeholder-${i}`} className="rounded-lg border border-transparent" />
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+{/* Mobile agent list moved to canvas overlay below */}
         <div className="hidden md:flex gap-2 flex-1 flex-wrap">
           {displayAgents.map((agent) => renderAgentChip(agent))}
           {displayAgents.length === 0 && (
@@ -1854,6 +1839,15 @@ export default function PixelOfficePage() {
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#1a1a2e]/85 pointer-events-none">
             <div className="px-4 py-2 rounded-lg border border-[var(--border)] bg-[var(--card)] text-sm text-[var(--text-muted)]">
               {t('common.loading')}
+            </div>
+          </div>
+        )}
+
+        {/* Mobile agent list overlay at bottom of canvas */}
+        {isMobileViewport && (
+          <div className="absolute bottom-0 left-0 right-0 z-10 px-2 pb-1 pt-1 bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar pointer-events-auto">
+              {displayAgents.map((agent) => renderAgentChip(agent, true))}
             </div>
           </div>
         )}
