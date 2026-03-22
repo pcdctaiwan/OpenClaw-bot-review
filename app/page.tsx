@@ -556,8 +556,16 @@ export default function Home() {
 
   if (error && !data) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-red-400">{t("common.loadError")}: {error}</p>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
+        <div className="w-full max-w-md">
+          <GatewayStatus />
+        </div>
+        <div className="text-center">
+          <p className="text-red-400 text-sm">{t("common.loadError")}: {error}</p>
+          <p className="text-[var(--text-muted)] text-xs mt-1">
+            {t("gateway.configCorruptHint")}
+          </p>
+        </div>
       </div>
     );
   }

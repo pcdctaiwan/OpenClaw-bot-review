@@ -39,11 +39,15 @@ export async function GET() {
       ? Date.now() - new Date(lastStallAt).getTime() < STALL_RECENT_MS
       : false;
 
+    // 回傳最後 30 行作為原始紀錄供 UI 顯示
+    const recentLines = lines.slice(-30);
+
     return NextResponse.json({
       ok: true,
       issues: [...issues],
       lastStallAt,
       stallActive,
+      recentLines,
     });
   } catch {
     return NextResponse.json({ ok: false, issues: [], lastStallAt: null, stallActive: false });
