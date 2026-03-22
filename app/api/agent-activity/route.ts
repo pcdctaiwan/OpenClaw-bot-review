@@ -669,7 +669,7 @@ async function detectStateFromSession(
 
   try {
     const content = await fs.readFile(sessionFilePath, 'utf8')
-    const lines = content.split('\n').filter(l => l.trim()).slice(-30)
+    const lines = content.split('\n').filter(l => l.trim()).slice(-50)
 
     let lastRole: string | null = null
     let lastStopReason: string | null = null
@@ -687,10 +687,14 @@ async function detectStateFromSession(
       } catch { /* skip malformed line */ }
     }
 
-    // Work completed → immediately idle
-    if (lastStopReason === 'stop') return 'idle'
-    // Still processing — but cap at 10 min, after that force idle
+    // Work completed → idle ONLY if the last message itself was the assistant finishing
+    if (lastRole === 'assistant' && lastStopReason === 'stop') return 'idle'
+    // New user/tool message after assistant stop, or tool call in flight → working
     if (lastRole === 'user' || lastRole === 'toolResult' || lastStopReason === 'toolUse') {
+      return timeDiff <= WORKING_MAX_MS ? 'working' : 'idle'
+    }
+    // assistant with no stopReason = mid-generation (streaming), treat as working
+    if (lastRole === 'assistant' && !lastStopReason) {
       return timeDiff <= WORKING_MAX_MS ? 'working' : 'idle'
     }
   } catch { /* file unreadable — fall through */ }
@@ -782,19 +786,29 @@ export async function GET() {
                 }
               } catch { /* ignore */ }
 
-              // Prefer the sessions.json-mapped file over raw scan when available
-              // (ensures we read a proper session, not a probe or temp file)
+              // If the most-recent .jsonl is not in sessions.json, keep it when it's
+              // recent (< 5 min) — it may be a brand-new session not yet indexed.
+              // Only fall back to the sessions.json-indexed file when the un-indexed
+              // file is stale, to avoid reading probe/temp files from old runs.
               if (mostRecentSessionFile) {
                 const sessionId = path.basename(mostRecentSessionFile, '.jsonl')
                 if (!sessionIdToFile.has(sessionId)) {
-                  // Most-recent file is not in sessions.json — find best known session by mtime
-                  let bestMtime = 0
-                  for (const [, fp] of sessionIdToFile) {
-                    try {
-                      const s = await fs.stat(fp)
-                      if (s.mtimeMs > bestMtime) { bestMtime = s.mtimeMs; mostRecentSessionFile = fp }
-                    } catch { /* ignore */ }
+                  const unindexedAge = now - lastActive
+                  if (unindexedAge > 5 * 60 * 1000) {
+                    // Stale un-indexed file — prefer the best sessions.json entry
+                    let bestMtime = 0
+                    for (const [, fp] of sessionIdToFile) {
+                      try {
+                        const s = await fs.stat(fp)
+                        if (s.mtimeMs > bestMtime) {
+                          bestMtime = s.mtimeMs
+                          mostRecentSessionFile = fp
+                        }
+                      } catch { /* ignore */ }
+                    }
+                    if (bestMtime > 0) lastActive = bestMtime
                   }
+                  // else: keep the un-indexed file — it's a fresh active session
                 }
               }
             }
